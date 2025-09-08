@@ -1,12 +1,12 @@
-# requirements.txt  (권장안: Cloud가 미리 올리는 버전에 맞춤)
+# Core
 streamlit==1.39.0
-pandas==2.2.2
-numpy==1.26.4
+pandas==2.2.3
+numpy==2.1.2
 openpyxl==3.1.5
-matplotlib==3.8.4
+matplotlib==3.9.2
 
-# Cloud가 부팅 시 올리는 버전들과 일치시키기
+# Streamlit Cloud가 선설치하는 라인업과 호환
 rich==14.1.0
 markdown-it-py==4.0.0
 mdurl==0.1.2
-pygments==2.19.2
+pygments==2.19.1
