@@ -1,7 +1,7 @@
 # app.py — Effective Days (유효일수 분석 전용)
 
-import os
 import sys
+import os
 from pathlib import Path
 from typing import Optional, Dict, Tuple
 
@@ -12,13 +12,12 @@ import matplotlib.pyplot as plt
 import streamlit as st
 
 # ─────────────────────────────────────────────────────────────
-# 기본 세팅 (Streamlit 첫 호출은 반드시 set_page_config가 먼저!)
+# 기본 세팅
 st.set_page_config(page_title="Effective Days · 유효일수 분석", page_icon="📅", layout="wide")
 os.environ.setdefault("MPLCONFIGDIR", "/tmp/matplotlib")
 
-# 버전 배지(이제 set_page_config 이후에 표시)
-with st.sidebar:
-    st.caption(f"Py {sys.version.split()[0]} · streamlit {st.__version__} · pandas {pd.__version__}")
+# 버전 정보(사이드바 상단에 간단 표기)
+st.sidebar.info(f"Py {sys.version.split()[0]} · streamlit {st.__version__} · pandas {pd.__version__}")
 
 # ─────────────────────────────────────────────────────────────
 # 한글 폰트 (가능하면 나눔/맑은고딕 사용)
@@ -49,13 +48,13 @@ def set_korean_font():
 set_korean_font()
 
 # ─────────────────────────────────────────────────────────────
-# 유틸
+# 유틸/상수
 CATS = ["평일_1","평일_2","토요일","일요일","공휴일_대체","명절_설날","명절_추석"]
 CAT_SHORT = {
     "평일_1":"평1", "평일_2":"평2", "토요일":"토", "일요일":"일",
     "공휴일_대체":"휴", "명절_설날":"설", "명절_추석":"추"
 }
-PALETTE = {  # 세련된 톤(색각친화 팔레트 기반)
+PALETTE = {  # 색각친화 톤
     "평일_1":"#7DC3C1",   # teal light
     "평일_2":"#3DA4AB",   # teal
     "토요일":"#5D6D7E",   # slate
@@ -64,11 +63,46 @@ PALETTE = {  # 세련된 톤(색각친화 팔레트 기반)
     "명절_설날":"#F5C04A",   # warm gold
     "명절_추석":"#F39C12",   # amber
 }
-DEFAULT_WEIGHTS = {  # 데이터 부족 시 초기값
+DEFAULT_WEIGHTS = {  # 데이터 부족 시 초깃값
     "평일_1":1.0, "평일_2":0.952, "토요일":0.85, "일요일":0.60,
     "공휴일_대체":0.799, "명절_설날":0.842, "명절_추석":0.799
 }
 
+# 표를 ‘가운데 정렬 + 가운데 배치’로 렌더링
+def render_centered_table(df: pd.DataFrame, float4_cols: list[str]|None=None, int_cols: list[str]|None=None, index=False):
+    float4_cols = float4_cols or []
+    int_cols = int_cols or []
+    show = df.copy()
+
+    for c in float4_cols:
+        if c in show.columns:
+            show[c] = pd.to_numeric(show[c], errors="coerce").map(lambda x: "" if pd.isna(x) else f"{x:.4f}")
+    for c in int_cols:
+        if c in show.columns:
+            show[c] = pd.to_numeric(show[c], errors="coerce").round().astype("Int64").map(lambda x: "" if pd.isna(x) else f"{int(x)}")
+
+    css = """
+    <style>
+      .center-wrap { display:flex; justify-content:center; }
+      table.centered-table {
+        table-layout: auto; border-collapse: collapse; margin: 0 auto;
+        max-width: 1100px; width: auto;
+      }
+      table.centered-table th, table.centered-table td {
+        text-align: center !important; padding: 6px 8px;
+      }
+      table.centered-table thead th {
+        position: sticky; top: 0; background: #f7f7f9;
+      }
+      table.centered-table td, table.centered-table th {
+        border-bottom: 1px solid #e5e7eb;
+      }
+    </style>
+    """
+    st.markdown(css, unsafe_allow_html=True)
+    st.markdown(f'<div class="center-wrap">{show.to_html(index=index, classes="centered-table")}</div>', unsafe_allow_html=True)
+
+# ─────────────────────────────────────────────────────────────
 def to_date(x):
     s = str(x).strip()
     if len(s)==8 and s.isdigit():
@@ -76,7 +110,9 @@ def to_date(x):
     return pd.to_datetime(x, errors="coerce")
 
 def normalize_calendar(df: pd.DataFrame):
-    """엑셀 원본을 표준 스키마로 정규화하고 (DataFrame, 공급량컬럼명 or None) 반환"""
+    """
+    엑셀 원본을 표준 스키마로 정규화하고 (DataFrame, 공급량컬럼명 or None) 반환
+    """
     d = df.copy()
     d.columns = [str(c).strip() for c in d.columns]
 
@@ -86,7 +122,6 @@ def normalize_calendar(df: pd.DataFrame):
         if str(c).lower() in ["날짜","일자","date"]:
             date_col = c; break
     if date_col is None:
-        # yyyymmdd로 추정
         for c in d.columns:
             try:
                 if pd.to_numeric(d[c], errors="coerce").notna().mean() > 0.9:
@@ -107,37 +142,45 @@ def normalize_calendar(df: pd.DataFrame):
         yo_map = {0:"월",1:"화",2:"수",3:"목",4:"금",5:"토",6:"일"}
         d["요일"] = d["날짜"].dt.dayofweek.map(yo_map)
 
-    # 구분/불리언 힌트 표준화
+    # 부울 힌트 표준화
     for col in ["주중여부","주말여부","공휴일여부","명절여부"]:
         if col in d.columns:
             d[col] = d[col].astype(str).str.upper().map({"TRUE":True,"FALSE":False})
         else:
             d[col] = np.nan
 
-    # 공급량 컬럼 추정(없으면 None)
+    # 공급량 컬럼(있으면 학습용으로 사용)
     supply_col = None
     for c in d.columns:
         if ("공급" in str(c)) and pd.api.types.is_numeric_dtype(d[c]):
             supply_col = c; break
 
-    # 카테고리 분류
+    # 명절 분류 보조
     def infer_festival(row):
         g = str(row.get("구분",""))
         mon = int(row["월"])
-        if "설" in g: return "명절_설날"
-        if "추" in g: return "명절_추석"
+        # 명시적 키워드가 있으면 그대로
+        if "설" in g and "추" not in g: 
+            return "명절_설날"
+        if "추" in g and "설" not in g:
+            return "명절_추석"
+        if "설" in g and "추" in g:
+            # 통합 표기(예: 명절(설·추석)) → 월로 분리
+            return "명절_설날" if mon in (1,2) else ("명절_추석" if mon in (9,10) else None)
+        # 명절여부만 있을 때도 월로 분리
         if str(row.get("명절여부","")).upper() == "TRUE":
             if mon in (1,2): return "명절_설날"
             if mon in (9,10): return "명절_추석"
-            return "명절_추석"
         return None
 
+    # 카테고리 매핑(※ ‘명절’ 우선 → 그 다음 공휴/대체 → 요일)
     def map_category(row):
+        fest = infer_festival(row)
+        if fest:
+            return fest
         g, y = str(row.get("구분","")), row["요일"]
         if ("공휴" in g) or ("대체" in g) or (str(row.get("공휴일여부","")).upper()=="TRUE"):
             return "공휴일_대체"
-        fest = infer_festival(row)
-        if fest: return fest
         if y=="토": return "토요일"
         if y=="일": return "일요일"
         if y in ["화","수","목"]: return "평일_1"
@@ -207,6 +250,7 @@ def effective_days_by_month(df: pd.DataFrame, weights_monthly: pd.DataFrame) -> 
 
     eff_sum = eff.sum(axis=1).rename("유효일수합")
     month_days = df.groupby(["연","월"])["날짜"].nunique().rename("월일수")
+
     out = pd.concat([month_days, counts.add_prefix("일수_"), eff.add_prefix("적용_"), eff_sum], axis=1)
     out["적용_비율(유효/월일수)"] = (out["유효일수합"]/out["월일수"]).round(4)
     return out.reset_index()
@@ -224,7 +268,7 @@ def draw_calendar_matrix(year: int, df_year: pd.DataFrame, weights: Dict[str,flo
     ax.invert_yaxis()
     ax.set_title(f"{year} 유효일수 카테고리 매트릭스", fontsize=14, pad=10)
 
-    # 테두리/그리드
+    # 그리드
     for x in range(13):
         ax.plot([x,x],[0,31], color="#D0D5DB", lw=0.8)
     for y in range(32):
@@ -248,7 +292,7 @@ def draw_calendar_matrix(year: int, df_year: pd.DataFrame, weights: Dict[str,flo
                 fontweight="bold"
             )
 
-    # 범례(가중치 함께)
+    # 범례(가중치 같이 표기)
     handles = [mpl.patches.Patch(color=PALETTE[c], label=f"{c} ({weights[c]:.3f})") for c in CATS]
     ax.legend(handles=handles, loc="upper left", bbox_to_anchor=(1.02, 1.0),
               frameon=False, title="카테고리 (가중치)")
@@ -272,10 +316,12 @@ with st.sidebar:
 
     st.header("예측 설정")
     years = list(range(2026, 2036))
-    start_y = st.selectbox("예측 시작(연)", years, index=0)
-    start_m = st.selectbox("예측 시작(월)", list(range(1,13)), index=0)
-    end_y   = st.selectbox("예측 종료(연)", years, index=0)
-    end_m   = st.selectbox("예측 종료(월)", list(range(1,13)), index=11)
+    c1, c2 = st.columns(2)
+    start_y = c1.selectbox("예측 시작(연)", years, index=0)
+    start_m = c2.selectbox("예측 시작(월)", list(range(1,13)), index=0)
+    c3, c4 = st.columns(2)
+    end_y   = c3.selectbox("예측 종료(연)", years, index=0)
+    end_m   = c4.selectbox("예측 종료(월)", list(range(1,13)), index=11)
     run_btn = st.button("예측 시작", type="primary")
 
 st.title("📅 Effective Days — 유효일수 분석")
@@ -319,33 +365,41 @@ if pred_df.empty:
     st.error("선택한 예측 구간에 해당하는 날짜가 엑셀에 없습니다. 미래 연도(2026+)도 포함되었는지 확인하세요.")
     st.stop()
 
-# 월별 유효일수 테이블
+# 월별 유효일수 테이블 (가운데 정렬 렌더)
 eff_tbl = effective_days_by_month(pred_df, W_monthly)
-show_cols = ["연","월","월일수"] + [f"일수_{c}" for c in CATS] + ["유효일수합","적용_비율(유효/월일수)"]
+show_cols = (
+    ["연","월","월일수"] +
+    [f"일수_{c}" for c in CATS] +
+    ["유효일수합","적용_비율(유효/월일수)"]
+)
 st.subheader("월별 유효일수 요약")
-st.dataframe(eff_tbl[show_cols].sort_values(["연","월"]), use_container_width=True)
+render_centered_table(
+    eff_tbl[show_cols].sort_values(["연","월"]),
+    float4_cols=["적용_비율(유효/월일수)"],
+    int_cols=["연","월","월일수"] + [f"일수_{c}" for c in CATS] + ["유효일수합"],
+    index=False
+)
 
-# 카테고리별 적용(가중) 일수 합계 — 간단 요약
-st.subheader("카테고리별 적용 가중일수 합계(예측 구간)")
-applied_cols = [f"적용_{c}" for c in CATS]
-simple = eff_tbl[["연","월"] + applied_cols].copy()
-simple_tot = simple[applied_cols].sum().to_frame(name="합계").T
-simple_tot.columns = [c.replace("적용_","") for c in simple_tot.columns]
-st.dataframe(simple_tot, use_container_width=True)
+# (요청) ‘가중일수 합계’ 요약표는 제거
 
-# 캘린더 매트릭스 (연도 선택)
+# 매트릭스(연도 선택: 좁은 컬럼에 배치해 작게 보이도록)
 years_in_range = sorted(pred_df["연"].unique().tolist())
-view_year = st.selectbox("매트릭스 표시 연도", years_in_range, index=0)
+mini, _ = st.columns([1,5])
+view_year = mini.selectbox("매트릭스 표시 연도", years_in_range, index=0)
 fig = draw_calendar_matrix(view_year, pred_df[pred_df["연"]==view_year], W_global)
 st.pyplot(fig, clear_figure=True)
 
-# 가중치 요약 표
+# 가중치 요약(가운데 정렬)
 st.subheader("카테고리 가중치 요약")
 w_show = pd.DataFrame({
     "카테고리": CATS,
     "전역 가중치(중앙값)": [round(W_global[c], 4) for c in CATS]
 })
-st.dataframe(w_show, use_container_width=True)
+render_centered_table(
+    w_show,
+    float4_cols=["전역 가중치(중앙값)"],
+    index=False
+)
 
 # CSV 다운로드
 st.download_button(
