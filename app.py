@@ -1,3 +1,6 @@
+import sys
+st.sidebar.info(f"Py {sys.version.split()[0]} · streamlit {st.__version__} · pandas {pd.__version__}")
+
 # app.py — Effective Days (유효일수 분석 전용)
 import os
 from pathlib import Path
