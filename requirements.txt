@@ -1,9 +1,5 @@
 streamlit==1.39.0
-pandas==2.2.3
-numpy==2.1.2
-openpyxl==3.1.5
-matplotlib==3.9.2
-rich==14.1.0
-markdown-it-py==4.0.0
-mdurl==0.1.2
-pygments==2.19.1
+pandas==2.2.2
+numpy==1.26.4
+openpyxl==3.1.2
+matplotlib==3.8.4
