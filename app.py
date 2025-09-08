@@ -281,13 +281,22 @@ def draw_calendar_matrix(year: int, df_year: pd.DataFrame, weights: Dict[str, fl
     return fig
 
 # 중앙 배치 + 가운데 정렬로 표 렌더
-def show_center_table(df: pd.DataFrame, int_cols: list[str] | None = None, float4_cols: list[str] | None = None, width_ratio=(1, 6, 1)):
+# 화면 중앙 배치 + 표 안/헤더 모두 가운데 정렬 + 숫자 포맷(정수/소수4자리) 지원
+def center_frame(
+    df: pd.DataFrame,
+    caption: str | None = None,
+    width_px: int = 800,   # (예전 파라미터와 호환만 위한 껍데기, 실제로는 columns로 가운데 정렬)
+    height_px: int | None = None,
+    int_cols: list[str] | None = None,       # 정수로 보일 컬럼
+    float4_cols: list[str] | None = None     # 소수점 4자리로 보일 컬럼
+) -> None:
     if int_cols is None:
         int_cols = []
     if float4_cols is None:
         float4_cols = []
 
-    fmt: Dict[str, str] = {}
+    # 각 컬럼별 포맷 지정
+    fmt: dict[str, str] = {}
     for c in int_cols:
         if c in df.columns:
             fmt[c] = "{:,.0f}"
@@ -295,16 +304,24 @@ def show_center_table(df: pd.DataFrame, int_cols: list[str] | None = None, float
         if c in df.columns:
             fmt[c] = "{:.4f}"
 
+    # 💡 pandas 2.x 호환: hide_index() → hide(axis="index")
     sty = (
-        df.style.set_properties(**{"text-align": "center"})
-        .set_table_styles([{"selector": "th", "props": [("text-align", "center"), ("font-weight", "600")]}])
-        .format(fmt)
-        .hide(axis="index")
+        df.style
+          .set_properties(**{"text-align": "center"})
+          .set_table_styles([
+              {"selector": "th", "props": [("text-align", "center"), ("font-weight", "600")]},
+              {"selector": "table", "props": [("margin-left", "auto"), ("margin-right", "auto")]}
+          ])
+          .format(fmt)
+          .hide(axis="index")
     )
 
-    c1, c2, c3 = st.columns(width_ratio)
+    # 진짜 가운데 배치(좌/중앙/우 3분할)
+    c1, c2, c3 = st.columns([1, 6, 1])
     with c2:
-        st.table(sty)
+        if caption:
+            st.caption(caption)
+        st.table(sty)   # ✅ HTML로 to_html/markdown 하지 말고, Styler 그대로 렌더
 
 # ─────────────────────────────────────────────────────────────
 # 사이드바(이전 방식 유지: 좌측에서 컨트롤 + 버튼)
