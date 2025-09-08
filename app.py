@@ -1,6 +1,8 @@
 # app.py — Effective Days (유효일수 분석 전용)
 import os
 from pathlib import Path
+from typing import Optional, Dict, Tuple
+
 import numpy as np
 import pandas as pd
 import matplotlib as mpl
@@ -67,7 +69,8 @@ def to_date(x):
         return pd.to_datetime(s, format="%Y%m%d", errors="coerce")
     return pd.to_datetime(x, errors="coerce")
 
-def normalize_calendar(df: pd.DataFrame) -> pd.DataFrame:
+def normalize_calendar(df: pd.DataFrame):
+    """엑셀 원본을 표준 스키마로 정규화하고 (DataFrame, 공급량컬럼명 or None) 반환"""
     d = df.copy()
     d.columns = [str(c).strip() for c in d.columns]
 
@@ -79,8 +82,11 @@ def normalize_calendar(df: pd.DataFrame) -> pd.DataFrame:
     if date_col is None:
         # yyyymmdd로 추정
         for c in d.columns:
-            if pd.to_numeric(d[c], errors="coerce").notna().mean()>0.9:
-                date_col = c; break
+            try:
+                if pd.to_numeric(d[c], errors="coerce").notna().mean() > 0.9:
+                    date_col = c; break
+            except Exception:
+                pass
     if date_col is None:
         raise ValueError("날짜 열을 찾지 못했습니다. (예: 날짜/일자/date/yyyymmdd)")
 
@@ -136,11 +142,16 @@ def normalize_calendar(df: pd.DataFrame) -> pd.DataFrame:
     d["카테고리"] = pd.Categorical(d["카테고리"], categories=CATS, ordered=False)
     return d, supply_col
 
-def compute_weights_monthly(df: pd.DataFrame, supply_col: str|None,
-                            base_cat="평일_1", cap_holiday=0.95):
+def compute_weights_monthly(
+    df: pd.DataFrame,
+    supply_col: Optional[str],
+    base_cat: str = "평일_1",
+    cap_holiday: float = 0.95
+) -> Tuple[pd.DataFrame, Dict[str, float]]:
     """
     월별 가중치: 같은 '월'에서 base_cat(평일_1)의 '공급량' 중앙값을 기준으로
     각 카테고리 중앙값 비율(=가중치)을 산정. 데이터 부족은 전체 중앙값/DEFAULT로 보강.
+    반환: (월별가중치 DataFrame(index=월), 전역가중치 dict)
     """
     W = []
     for m in range(1,13):
@@ -149,7 +160,7 @@ def compute_weights_monthly(df: pd.DataFrame, supply_col: str|None,
             W.append(pd.Series({c: np.nan for c in CATS}, name=m))
             continue
         if (supply_col is None) or sub[sub["카테고리"]==base_cat].empty:
-            # 공급량이 없거나 베이스가 없으면 빈 값
+            # 공급량이 없거나 베이스가 없으면 베이스=1.0, 나머지 결측
             row = {c: (1.0 if c==base_cat else np.nan) for c in CATS}
             W.append(pd.Series(row, name=m))
             continue
@@ -157,7 +168,7 @@ def compute_weights_monthly(df: pd.DataFrame, supply_col: str|None,
         row = {}
         for c in CATS:
             if c==base_cat:
-                row[c]=1.0
+                row[c] = 1.0
             else:
                 s = sub.loc[sub["카테고리"]==c, supply_col]
                 row[c] = float(s.median()/base_med) if (len(s)>0 and base_med>0) else np.nan
@@ -174,23 +185,28 @@ def compute_weights_monthly(df: pd.DataFrame, supply_col: str|None,
 
     W_filled = W.fillna(pd.Series(global_med))
     global_w = {c: float(np.nanmedian(W_filled[c].values)) for c in CATS}
-    return W_filled, global_w  # 월별가중치, 전역가중치
+    return W_filled, global_w
 
-def effective_days_by_month(df: pd.DataFrame, weights_monthly: pd.DataFrame):
+def effective_days_by_month(df: pd.DataFrame, weights_monthly: pd.DataFrame) -> pd.DataFrame:
     """월별 카테고리 일수와 가중 유효일수 합계를 계산"""
-    counts = df.pivot_table(index=["연","월"], columns="카테고리", values="날짜",
-                            aggfunc="count").reindex(columns=CATS, fill_value=0).astype(int)
+    counts = df.pivot_table(
+        index=["연","월"], columns="카테고리", values="날짜",
+        aggfunc="count"
+    ).reindex(columns=CATS, fill_value=0).astype(int)
+
     # 월별 가중치 적용
     eff = counts.copy().astype(float)
+    month_idx = counts.index.get_level_values("월")
     for c in CATS:
-        eff[c] = eff[c] * counts.index.get_level_values("월").map(weights_monthly[c]).values
+        eff[c] = eff[c] * month_idx.map(weights_monthly[c]).values
+
     eff_sum = eff.sum(axis=1).rename("유효일수합")
     month_days = df.groupby(["연","월"])["날짜"].nunique().rename("월일수")
     out = pd.concat([month_days, counts.add_prefix("일수_"), eff.add_prefix("적용_"), eff_sum], axis=1)
     out["적용_비율(유효/월일수)"] = (out["유효일수합"]/out["월일수"]).round(4)
     return out.reset_index()
 
-def draw_calendar_matrix(year: int, df_year: pd.DataFrame, weights: dict[str,float]):
+def draw_calendar_matrix(year: int, df_year: pd.DataFrame, weights: Dict[str,float]):
     """12x31 매트릭스 캘린더(월=열, 일=행)"""
     months = range(1,13)
     days = range(1,32)
@@ -220,16 +236,17 @@ def draw_calendar_matrix(year: int, df_year: pd.DataFrame, weights: dict[str,flo
             rect = mpl.patches.Rectangle((j, i), 1, 1, color=color, alpha=0.95)
             ax.add_patch(rect)
             label = CAT_SHORT.get(cat, "")
-            ax.text(j+0.5, i+0.5, label, ha="center", va="center",
-                    fontsize=9, color="white" if cat in ["일요일","공휴일_대체","명절_설날","명절_추석"] else "black",
-                    fontweight="bold")
+            ax.text(
+                j+0.5, i+0.5, label, ha="center", va="center",
+                fontsize=9,
+                color="white" if cat in ["일요일","공휴일_대체","명절_설날","명절_추석"] else "black",
+                fontweight="bold"
+            )
 
     # 범례(가중치 함께)
-    handles = []
-    for c in CATS:
-        handles.append(mpl.patches.Patch(color=PALETTE[c], label=f"{c} ({weights[c]:.3f})"))
-    leg = ax.legend(handles=handles, loc="upper left", bbox_to_anchor=(1.02, 1.0),
-                    frameon=False, title="카테고리 (가중치)")
+    handles = [mpl.patches.Patch(color=PALETTE[c], label=f"{c} ({weights[c]:.3f})") for c in CATS]
+    ax.legend(handles=handles, loc="upper left", bbox_to_anchor=(1.02, 1.0),
+              frameon=False, title="카테고리 (가중치)")
     plt.tight_layout()
     return fig
 
@@ -280,7 +297,9 @@ except Exception as e:
     st.stop()
 
 # 가중치 계산(학습 데이터 전체에서 산정)
-W_monthly, W_global = compute_weights_monthly(base_df, supply_col, base_cat="평일_1", cap_holiday=0.95)
+W_monthly, W_global = compute_weights_monthly(
+    base_df, supply_col, base_cat="평일_1", cap_holiday=0.95
+)
 
 # 예측 기간 필터
 start_ts = pd.Timestamp(int(start_y), int(start_m), 1)
