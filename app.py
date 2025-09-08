@@ -102,16 +102,19 @@ def normalize_calendar(df: pd.DataFrame):
             supply_col = c; break
 
     # 명절/대체/요일 기반 카테고리
-    def infer_festival(row):
-        g = str(row.get("구분",""))
-        mon = int(row["월"])
-        if "설" in g: return "명절_설날"
-        if "추" in g: return "명절_추석"
-        if str(row.get("명절여부","")).upper() == "TRUE":
-            if mon in (1,2):  return "명절_설날"
-            if mon in (9,10): return "명절_추석"
-            return "명절_추석"
-        return None
+   def infer_festival(row):
+    g = str(row.get("구분",""))
+    mon, day = int(row["월"]), int(row["일"])
+    # [수정] 구분 값, 명절여부, 날짜 범위를 모두 체크
+    if "설" in g or (mon == 1 and day >= 20 and day <= 31) or (mon == 2 and day <= 15):
+        return "명절_설날"
+    if "추" in g or (mon == 9 and day >= 20) or (mon == 10 and day <= 15):
+        return "명절_추석"
+    if str(row.get("명절여부","")).upper() == "TRUE":
+        if mon in (1,2):  return "명절_설날"
+        if mon in (9,10): return "명절_추석"
+    return None
+
 
     def map_category(row):
         g, y = str(row.get("구분","")), row["요일"]
@@ -246,18 +249,7 @@ st.title(TITLE)
 st.caption(DESC)
 
 with st.sidebar:
-    st.header("예측 기간")
-    years = list(range(2026, 2031))  # 2026~2030
-    colA, colB = st.columns(2)
-    with colA: y_start = st.selectbox("예측 시작(연)", years, index=0, key="ys")
-    with colB: m_start = st.selectbox("예측 시작(월)", list(range(1,13)), index=0, key="ms")
-    colC, colD = st.columns(2)
-    with colC: y_end = st.selectbox("예측 종료(연)", years, index=1, key="ye")
-    with colD: m_end = st.selectbox("예측 종료(월)", list(range(1,13)), index=11, key="me")
-    show_year = st.selectbox("매트릭스 표시 연도", years, index=0, key="viewy")
-
-    st.markdown("---")
-    st.subheader("데이터 소스")
+    st.subheader("데이터 소스")  # [수정] 데이터 소스를 먼저 위로 이동
     src = st.radio("파일 선택", ["Repo 내 엑셀 사용","파일 업로드"], index=0)
     default_path = Path("data") / "effective_days_calendar.xlsx"
     if src == "Repo 내 엑셀 사용":
@@ -269,10 +261,19 @@ with st.sidebar:
     else:
         file = st.file_uploader("엑셀 업로드(xlsx)", type=["xlsx"])
 
+    st.markdown("---")
+    st.header("예측 기간")  # [수정] 예측 기간을 아래로 이동
+    years = list(range(2026, 2031))
+    colA, colB = st.columns(2)
+    with colA: y_start = st.selectbox("예측 시작(연)", years, index=0, key="ys")
+    with colB: m_start = st.selectbox("예측 시작(월)", list(range(1,13)), index=0, key="ms")
+    colC, colD = st.columns(2)
+    with colC: y_end = st.selectbox("예측 종료(연)", years, index=1, key="ye")
+    with colD: m_end = st.selectbox("예측 종료(월)", list(range(1,13)), index=11, key="me")
+    show_year = st.selectbox("매트릭스 표시 연도", years, index=0, key="viewy")
+
     run_btn = st.button("분석 시작", type="primary")
 
-if not run_btn:
-    st.stop()
 
 # ───────────────────────── 데이터 로드 & 전처리 ─────────────────────────
 if file is None:
