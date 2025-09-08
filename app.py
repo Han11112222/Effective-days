@@ -1,8 +1,7 @@
-import sys
-st.sidebar.info(f"Py {sys.version.split()[0]} · streamlit {st.__version__} · pandas {pd.__version__}")
-
 # app.py — Effective Days (유효일수 분석 전용)
+
 import os
+import sys
 from pathlib import Path
 from typing import Optional, Dict, Tuple
 
@@ -13,9 +12,13 @@ import matplotlib.pyplot as plt
 import streamlit as st
 
 # ─────────────────────────────────────────────────────────────
-# 기본 세팅
+# 기본 세팅 (Streamlit 첫 호출은 반드시 set_page_config가 먼저!)
 st.set_page_config(page_title="Effective Days · 유효일수 분석", page_icon="📅", layout="wide")
 os.environ.setdefault("MPLCONFIGDIR", "/tmp/matplotlib")
+
+# 버전 배지(이제 set_page_config 이후에 표시)
+with st.sidebar:
+    st.caption(f"Py {sys.version.split()[0]} · streamlit {st.__version__} · pandas {pd.__version__}")
 
 # ─────────────────────────────────────────────────────────────
 # 한글 폰트 (가능하면 나눔/맑은고딕 사용)
@@ -163,7 +166,6 @@ def compute_weights_monthly(
             W.append(pd.Series({c: np.nan for c in CATS}, name=m))
             continue
         if (supply_col is None) or sub[sub["카테고리"]==base_cat].empty:
-            # 공급량이 없거나 베이스가 없으면 베이스=1.0, 나머지 결측
             row = {c: (1.0 if c==base_cat else np.nan) for c in CATS}
             W.append(pd.Series(row, name=m))
             continue
