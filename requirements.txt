@@ -1,5 +1,11 @@
 streamlit==1.37.0
 pandas==2.2.2
 numpy==1.26.4
-openpyxl==3.1.2
+openpyxl==3.1.5
 matplotlib==3.8.4
+
+# 충돌 방지용(스트림릿 내부에서 쓰는 패키지들을 새 버전으로 고정)
+rich==13.7.1
+markdown-it-py==3.0.0
+mdurl==0.1.2
+pygments==2.17.2
