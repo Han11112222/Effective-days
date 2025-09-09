@@ -1,4 +1,4 @@
-# app.py — Effective Days (매트릭스 즉시 반영 + CSV 다운로드)
+# app.py — Effective Days (분석 시작 버튼 유지 + 매트릭스 즉시 갱신 + 좌측하단 CSV 다운로드)
 import os
 from pathlib import Path
 from typing import Optional, Dict, Tuple, List
@@ -27,7 +27,7 @@ PALETTE = {
     "공휴일_대체":"#E57373","명절_설날":"#F5C04A","명절_추석":"#F39C12",
 }
 DEFAULT_WEIGHTS = {"평일_1":1.0,"평일_2":0.952,"토요일":0.85,"일요일":0.60,"공휴일_대체":0.799,"명절_설날":0.842,"명절_추석":0.799}
-CAP_HOLIDAY = 0.90  # 휴일·명절 가중치 상한 (필요시 여기만 조정)
+CAP_HOLIDAY = 0.90  # 휴일·명절 가중치 상한
 
 # ───────────────────────── 한글 폰트 ─────────────────────────
 def set_korean_font():
@@ -309,6 +309,10 @@ def center_html(df: pd.DataFrame, width_px: int = 1100,
 st.title(TITLE)
 st.caption(DESC)
 
+# 버튼 유지용 세션 상태
+if "ran" not in st.session_state:
+    st.session_state.ran = False
+
 with st.sidebar:
     # 데이터 소스
     st.subheader("데이터 소스")
@@ -334,6 +338,14 @@ with st.sidebar:
     with colC: y_end = st.selectbox("예측 종료(연)", years, index=1, key="ye")
     with colD: m_end = st.selectbox("예측 종료(월)", list(range(1,13)), index=11, key="me")
 
+    # 분석 시작 버튼(최초 1회)
+    if st.button("분석 시작", type="primary"):
+        st.session_state.ran = True
+
+# 최초 실행 전이면 stop
+if not st.session_state.ran:
+    st.stop()
+
 # ───────────────────────── 데이터 로드 & 전처리 ─────────────────────────
 if src == "Repo 내 엑셀 사용" and not default_path.exists() and file is None:
     st.warning("엑셀을 업로드하거나 data/effective_days_calendar.xlsx 를 레포에 넣어줘.")
@@ -354,7 +366,7 @@ if pred_df.empty:
     st.error("선택한 예측 구간에 해당하는 날짜가 엑셀에 없어.")
     st.stop()
 
-# 매트릭스(연도 선택 즉시 반영)
+# ───────────────────────── 매트릭스 (연도 선택은 즉시 갱신) ─────────────────────────
 years_in_range = sorted(pred_df["연"].unique().tolist())
 st.markdown("#### 유효일수 카테고리 매트릭스")
 c_sel, _ = st.columns([1, 9])
@@ -363,7 +375,7 @@ with c_sel:
 fig = draw_calendar_matrix(show_year, pred_df[pred_df["연"]==show_year], W_global)
 st.pyplot(fig, clear_figure=True)
 
-# 가중치 요약
+# ───────────────────────── 가중치 요약 ─────────────────────────
 st.subheader("카테고리 가중치 요약")
 w_show = pd.DataFrame({"카테고리": CATS, "전역 가중치(중앙값)": [round(W_global[c],4) for c in CATS]})
 html = center_html(w_show, width_px=620, float4=["전역 가중치(중앙값)"])
@@ -379,7 +391,7 @@ st.markdown(
 """
 )
 
-# 월별 유효일수 표 + CSV 다운로드
+# ───────────────────────── 월별 유효일수 표 + 좌측하단 CSV 다운로드 ─────────────────────────
 st.subheader("월별 유효일수 요약")
 eff_tbl = effective_days_by_month(pred_df, W_monthly, count_col="카테고리_CNT")
 
@@ -393,12 +405,14 @@ int_cols = [c for c in eff_show.columns if c not in float4_cols+["비고"]]
 html2 = center_html(eff_show, width_px=1180, float4=float4_cols, int_cols=int_cols)
 st.markdown(html2, unsafe_allow_html=True)
 
-# ▶ CSV 다운로드 버튼
-csv_bytes = eff_show.to_csv(index=False, encoding="utf-8-sig").encode("utf-8-sig")
-st.download_button(
-    label="월별 유효일수 CSV 다운로드",
-    data=csv_bytes,
-    file_name="effective_days_summary.csv",
-    mime="text/csv",
-    use_container_width=True,
-)
+# 좌측하단에 작게 배치
+left_dl, _ = st.columns([1, 9])
+with left_dl:
+    csv_bytes = eff_show.to_csv(index=False, encoding="utf-8-sig").encode("utf-8-sig")
+    st.download_button(
+        label="월별 유효일수 CSV 다운로드",
+        data=csv_bytes,
+        file_name="effective_days_summary.csv",
+        mime="text/csv",
+        use_container_width=False,
+    )
