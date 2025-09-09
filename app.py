@@ -309,7 +309,7 @@ st.pyplot(fig, clear_figure=True)
 # ───────────────────────── 가중치 요약 (표+설명 더 가까이) ─────────────────────────
 st.subheader("카테고리 가중치 요약")
 # 간격을 좁힌 컬럼: gap="small", 표:설명 폭 비율 조정
-col_table, col_desc = st.columns([1.0, 1.05], gap="small")
+col_table, col_desc = st.columns([0.5, 1.05], gap="small")
 
 with col_table:
     w_show = pd.DataFrame({"카테고리": CATS, "전역 가중치(중앙값)": [round(W_global[c],4) for c in CATS]})
