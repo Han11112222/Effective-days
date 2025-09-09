@@ -1,4 +1,4 @@
-# app.py — Effective Days (분석 시작 버튼 유지 + 매트릭스 즉시 갱신 + 좌측하단 CSV 다운로드)
+# app.py — Effective Days (분석 시작 버튼 유지 + 매트릭스 즉시 갱신 + 좌측하단 CSV 다운로드 + 설명을 표 오른쪽으로 배치)
 import os
 from pathlib import Path
 from typing import Optional, Dict, Tuple, List
@@ -347,11 +347,8 @@ if not st.session_state.ran:
     st.stop()
 
 # ───────────────────────── 데이터 로드 & 전처리 ─────────────────────────
-if src == "Repo 내 엑셀 사용" and not default_path.exists() and file is None:
-    st.warning("엑셀을 업로드하거나 data/effective_days_calendar.xlsx 를 레포에 넣어줘.")
-    st.stop()
-
-raw = pd.read_excel(file if file is not None else default_path, engine="openpyxl")
+default_path = Path("data") / "effective_days_calendar.xlsx"
+raw = pd.read_excel(file if 'file' in locals() and file is not None else default_path, engine="openpyxl")
 base_df, supply_col = normalize_calendar(raw)
 
 # 가중치 계산
@@ -375,21 +372,26 @@ with c_sel:
 fig = draw_calendar_matrix(show_year, pred_df[pred_df["연"]==show_year], W_global)
 st.pyplot(fig, clear_figure=True)
 
-# ───────────────────────── 가중치 요약 ─────────────────────────
+# ───────────────────────── 가중치 요약 (표 왼쪽, 설명 오른쪽) ─────────────────────────
 st.subheader("카테고리 가중치 요약")
-w_show = pd.DataFrame({"카테고리": CATS, "전역 가중치(중앙값)": [round(W_global[c],4) for c in CATS]})
-html = center_html(w_show, width_px=620, float4=["전역 가중치(중앙값)"])
-st.markdown(html, unsafe_allow_html=True)
-st.markdown(
-    f"""
+col_table, col_desc = st.columns([1.1, 1.0])
+
+with col_table:
+    w_show = pd.DataFrame({"카테고리": CATS, "전역 가중치(중앙값)": [round(W_global[c],4) for c in CATS]})
+    html = center_html(w_show, width_px=620, float4=["전역 가중치(중앙값)"])
+    st.markdown(html, unsafe_allow_html=True)
+
+with col_desc:
+    st.markdown(
+        f"""
 **유효일수 산정(간단 설명)**  
-- 월별 기준카테고리(평일_1) 중앙값을 \(Med_{{m,평1}}\), 카테고리 \(c\) 중앙값을 \(Med_{{m,c}}\)라 할 때  
-  **월별 가중치** \(w_{{m,c}} = Med_{{m,c}} / Med_{{m,평1}}\).  
+
+- 월별 기준카테고리(평일_1) 중앙값을 \(Med_{{m,평1}}\), 카테고리 \(c\) 중앙값을 \(Med_{{m,c}}\)라 할 때 **월별 가중치** \(w_{{m,c}} = Med_{{m,c}} / Med_{{m,평1}}\).  
 - 표본 부족 시 전역 중앙값/기본값 보강, **휴일·명절은 상한 \(\\le {CAP_HOLIDAY:.2f}\)** 적용.  
 - **대체휴일이 설/추석으로 발생한 날은 명절로 귀속**하여 동일 가중치 적용(매트릭스 라벨: `설*`, `추*`).  
 - **월별 유효일수** \(ED_m = \\sum_c (\\text{{해당월 일수}}_c \\times w_{{m,c}})\).
 """
-)
+    )
 
 # ───────────────────────── 월별 유효일수 표 + 좌측하단 CSV 다운로드 ─────────────────────────
 st.subheader("월별 유효일수 요약")
