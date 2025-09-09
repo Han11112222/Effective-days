@@ -1,4 +1,4 @@
-# app.py — Effective Days (분석 시작 버튼 유지 + 매트릭스 즉시 갱신 + 좌측하단 CSV + 설명을 표 오른쪽에 더 가깝게)
+# app.py — Effective Days (아이콘 헤더 + 분석 시작 버튼 유지 + 매트릭스 즉시 갱신 + 좌측하단 CSV + 설명을 표 오른쪽에 더 가깝게)
 import os
 from pathlib import Path
 from typing import Optional, Dict, Tuple, List
@@ -28,6 +28,28 @@ PALETTE = {
 }
 DEFAULT_WEIGHTS = {"평일_1":1.0,"평일_2":0.952,"토요일":0.85,"일요일":0.60,"공휴일_대체":0.799,"명절_설날":0.842,"명절_추석":0.799}
 CAP_HOLIDAY = 0.90  # 휴일·명절 가중치 상한
+
+# (NEW) ─────────────────────── 아이콘 헤더용 CSS/함수 ───────────────────────
+st.markdown(
+    """
+    <style>
+      .icon-h1{display:flex;align-items:center;gap:.6rem;font-size:2.0rem;font-weight:800;margin:.2rem 0 .6rem 0;}
+      .icon-h2{display:flex;align-items:center;gap:.5rem;font-size:1.3rem;font-weight:700;margin:1.0rem 0 .6rem 0;}
+      .icon-h3{display:flex;align-items:center;gap:.45rem;font-size:1.1rem;font-weight:700;margin:.6rem 0 .4rem 0;}
+      .icon-emoji{font-size:1.25em;line-height:1;filter:drop-shadow(0 1px 0 rgba(0,0,0,.05))}
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
+def icon_title(text: str, icon: str = "🧩"):
+    st.markdown(f"<div class='icon-h1'><span class='icon-emoji'>{icon}</span><span>{text}</span></div>", unsafe_allow_html=True)
+
+def icon_section(text: str, icon: str = "🗺️"):
+    st.markdown(f"<div class='icon-h2'><span class='icon-emoji'>{icon}</span><span>{text}</span></div>", unsafe_allow_html=True)
+
+def icon_small(text: str, icon: str = "🗂️"):
+    st.markdown(f"<div class='icon-h3'><span class='icon-emoji'>{icon}</span><span>{text}</span></div>", unsafe_allow_html=True)
 
 # ───────────────────────── 한글 폰트 ─────────────────────────
 def set_korean_font():
@@ -249,14 +271,16 @@ def center_html(df: pd.DataFrame, width_px: int = 1100, float4: Optional[List[st
     return sty.to_html()
 
 # ───────────────────────── UI ─────────────────────────
-st.title(TITLE)
+# (NEW) 아이콘 타이틀
+icon_title(TITLE, "🧩")
 st.caption(DESC)
 
 # 분석 시작 버튼 상태
 if "ran" not in st.session_state: st.session_state.ran = False
 
 with st.sidebar:
-    st.subheader("데이터 소스")
+    # (NEW) 사이드바 섹션 아이콘 헤더
+    icon_small("데이터 소스", "🗂️")
     src = st.radio("파일 선택", ["Repo 내 엑셀 사용","파일 업로드"], index=0)
     default_path = Path("data") / "effective_days_calendar.xlsx"
     if src == "Repo 내 엑셀 사용":
@@ -269,7 +293,7 @@ with st.sidebar:
         file = st.file_uploader("엑셀 업로드(xlsx)", type=["xlsx"])
 
     st.markdown("---")
-    st.header("예측 기간")
+    icon_small("예측 기간", "⏱️")
     years = list(range(2026, 2031))
     colA, colB = st.columns(2)
     with colA: y_start = st.selectbox("예측 시작(연)", years, index=0, key="ys")
@@ -298,8 +322,8 @@ if pred_df.empty:
     st.stop()
 
 # ───────────────────────── 매트릭스 ─────────────────────────
+icon_section("유효일수 카테고리 매트릭스", "🗺️")
 years_in_range = sorted(pred_df["연"].unique().tolist())
-st.markdown("#### 유효일수 카테고리 매트릭스")
 c_sel, _ = st.columns([1, 9])
 with c_sel:
     show_year = st.selectbox("매트릭스 표시 연도", years_in_range, index=0, key="matrix_year")
@@ -307,13 +331,11 @@ fig = draw_calendar_matrix(show_year, pred_df[pred_df["연"]==show_year], W_glob
 st.pyplot(fig, clear_figure=True)
 
 # ───────────────────────── 가중치 요약 (표+설명 더 가까이) ─────────────────────────
-st.subheader("카테고리 가중치 요약")
-# 간격을 좁힌 컬럼: gap="small", 표:설명 폭 비율 조정
+icon_section("카테고리 가중치 요약", "⚖️")
 col_table, col_desc = st.columns([0.5, 1.05], gap="small")
 
 with col_table:
     w_show = pd.DataFrame({"카테고리": CATS, "전역 가중치(중앙값)": [round(W_global[c],4) for c in CATS]})
-    # 표 폭을 조금 줄여 두 컬럼 간격을 시각적으로 더 좁힘
     html = center_html(w_show, width_px=540, float4=["전역 가중치(중앙값)"])
     st.markdown(html, unsafe_allow_html=True)
 
@@ -329,7 +351,7 @@ with col_desc:
     )
 
 # ───────────────────────── 월별 유효일수 표 + 좌측하단 CSV ─────────────────────────
-st.subheader("월별 유효일수 요약")
+icon_section("월별 유효일수 요약", "📊")
 eff_tbl = effective_days_by_month(pred_df, W_monthly, count_col="카테고리_CNT")
 
 show_cols = (["연","월","월일수"] + [f"일수_{c}" for c in CATS] + ["유효일수합","적용_비율(유효/월일수)","비고"])
