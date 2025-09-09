@@ -1,4 +1,4 @@
-# app.py
+# app.py — Effective Days (매트릭스 즉시 반영 + CSV 다운로드)
 import os
 from pathlib import Path
 from typing import Optional, Dict, Tuple, List
@@ -20,7 +20,6 @@ DESC = (
     "(표본 부족 시 전역 중앙값/기본값 보강. 휴일/명절 가중치는 상한 적용)"
 )
 
-# 상단에서 한번에 바꾸기 쉽게 상수화
 CATS: List[str] = ["평일_1","평일_2","토요일","일요일","공휴일_대체","명절_설날","명절_추석"]
 CAT_SHORT: Dict[str, str] = {"평일_1":"평1","평일_2":"평2","토요일":"토","일요일":"일","공휴일_대체":"휴","명절_설날":"설","명절_추석":"추"}
 PALETTE = {
@@ -28,7 +27,7 @@ PALETTE = {
     "공휴일_대체":"#E57373","명절_설날":"#F5C04A","명절_추석":"#F39C12",
 }
 DEFAULT_WEIGHTS = {"평일_1":1.0,"평일_2":0.952,"토요일":0.85,"일요일":0.60,"공휴일_대체":0.799,"명절_설날":0.842,"명절_추석":0.799}
-CAP_HOLIDAY = 0.90  # 휴일·명절 가중치 상한 (UI 제거, 필요 시 여기서만 변경)
+CAP_HOLIDAY = 0.90  # 휴일·명절 가중치 상한 (필요시 여기만 조정)
 
 # ───────────────────────── 한글 폰트 ─────────────────────────
 def set_korean_font():
@@ -64,9 +63,9 @@ def to_date(x):
         return pd.to_datetime(s, format="%Y%m%d", errors="coerce")
     return pd.to_datetime(x, errors="coerce")
 
-# 키워드 파서(구분 텍스트에 다 들어올 수 있음: "대체공휴일(설)", "추석 대체", "설연휴", ...)
+# 키워드 파서
 HOL_KW = {
-    "seol": ["설", "설날", "신정설?","lunar", "seol"],
+    "seol": ["설", "설날", "seol"],
     "chu":  ["추", "추석", "chuseok", "chu"],
     "sub":  ["대체", "대체공휴", "substitute"]
 }
@@ -117,28 +116,24 @@ def normalize_calendar(df: pd.DataFrame):
         if ("공급" in str(c)) and pd.api.types.is_numeric_dtype(d[c]):
             supply_col = c; break
 
-    # 1) 1차 분류: 요일/공휴일/명절 텍스트 기반
+    # 1) 1차 분류
     def base_category(row) -> str:
         g = str(row.get("구분",""))
         y = row["요일"]
-        # 명절 텍스트 우선
         if contains_any(g, HOL_KW["seol"]) or (row.get("명절여부", False) and row["월"] in (1,2)):
             return "명절_설날"
         if contains_any(g, HOL_KW["chu"]) or (row.get("명절여부", False) and row["월"] in (9,10)):
             return "명절_추석"
-        # 공휴/대체
         if ("공휴" in g) or contains_any(g, HOL_KW["sub"]) or row.get("공휴일여부", False):
             return "공휴일_대체"
-        # 요일
         if y == "토": return "토요일"
         if y == "일": return "일요일"
         if y in ["화","수","목"]: return "평일_1"
         if y in ["월","금"]: return "평일_2"
         return "평일_1"
-
     d["카테고리_SRC"] = d.apply(base_category, axis=1)
 
-    # 2) 대체휴일 사유 추출(설/추)
+    # 2) 대체휴일 사유(설/추)
     def sub_reason(row) -> Optional[str]:
         if row["카테고리_SRC"] != "공휴일_대체":
             return None
@@ -146,10 +141,9 @@ def normalize_calendar(df: pd.DataFrame):
         if contains_any(g, HOL_KW["seol"]): return "설"
         if contains_any(g, HOL_KW["chu"]):  return "추"
         return None
-    d["대체_사유"] = d.apply(sub_reason, axis=1)  # 설/추/None
+    d["대체_사유"] = d.apply(sub_reason, axis=1)
 
-    # 3) 카운트용/ED용 카테고리
-    #    - 설/추로 인한 대체휴일은 모두 명절로 귀속(카운트/가중치 모두)
+    # 3) 카운트/ED용 카테고리(명절 대체는 명절로 귀속)
     def cat_for_count(row):
         if row["카테고리_SRC"] == "공휴일_대체" and row["대체_사유"] == "설":
             return "명절_설날"
@@ -157,28 +151,20 @@ def normalize_calendar(df: pd.DataFrame):
             return "명절_추석"
         return row["카테고리_SRC"]
     d["카테고리_CNT"] = d.apply(cat_for_count, axis=1)
+    d["카테고리_ED"]  = d["카테고리_CNT"]
 
-    def cat_for_ed(row):
-        # 일요일 vs 공휴일_대체도 산식 동일(전 카테고리 월중앙값/평1 중앙값)
-        return cat_for_count(row)
-    d["카테고리_ED"] = d.apply(cat_for_ed, axis=1)
-
-    # 4) 매트릭스 라벨(대체휴일 설/추는 별도 표기)
+    # 매트릭스 라벨/색
     def label_for_matrix(row):
-        if row["카테고리_SRC"] == "공휴일_대체" and row["대체_사유"] == "설":
-            return "설*"
-        if row["카테고리_SRC"] == "공휴일_대체" and row["대체_사유"] == "추":
-            return "추*"
+        if row["카테고리_SRC"] == "공휴일_대체" and row["대체_사유"] == "설": return "설*"
+        if row["카테고리_SRC"] == "공휴일_대체" and row["대체_사유"] == "추": return "추*"
         return CAT_SHORT.get(row["카테고리_CNT"], "")
     d["카테고리_표시"] = d.apply(label_for_matrix, axis=1)
 
-    # 색상도 명절 대체는 명절색 사용
     def color_for_matrix(row):
-        key = row["카테고리_CNT"]  # 귀속 후 카테고리
+        key = row["카테고리_CNT"]
         return PALETTE.get(key, "#EEEEEE")
     d["카테고리_색"] = d.apply(color_for_matrix, axis=1)
 
-    # 카테고리형
     for col in ["카테고리_SRC","카테고리_CNT","카테고리_ED"]:
         d[col] = pd.Categorical(d[col], categories=CATS)
 
@@ -228,16 +214,13 @@ def effective_days_by_month(
     df: pd.DataFrame,
     weights_monthly: pd.DataFrame,
     count_col: str = "카테고리_CNT",
-    ed_col: str = "카테고리_ED",
 ) -> pd.DataFrame:
-    """카운트는 count_col, 가중치는 ed_col 기준으로 계산."""
-    # 카운트(설/추 대체는 명절로 귀속된 상태)
+    """카운트는 count_col, 가중치는 월별 W 적용."""
     counts = (
         df.pivot_table(index=["연","월"], columns=count_col, values="날짜", aggfunc="count")
           .reindex(columns=CATS, fill_value=0)
           .astype(int)
     )
-    # 가중치 적용
     eff = counts.copy().astype(float)
     month_idx = counts.index.get_level_values("월")
     for c in CATS:
@@ -248,8 +231,7 @@ def effective_days_by_month(
     out = pd.concat([month_days, counts.add_prefix("일수_"), eff.add_prefix("적용_"), eff_sum], axis=1)
     out["적용_비율(유효/월일수)"] = (out["유효일수합"]/out["월일수"]).round(4)
 
-    # 비고: 명절·대체 세부
-    #  - 설/추 대체 포함(대체포함 n일) 표기
+    # 비고(명절 대체 포함)
     aux = df.assign(_cnt=1)
     sub_s = aux[(aux["카테고리_SRC"]=="공휴일_대체") & (aux["대체_사유"]=="설")]\
             .groupby(["연","월"])["_cnt"].sum().rename("대체_설").astype(int)
@@ -265,7 +247,6 @@ def effective_days_by_month(
         if r.get("일수_명절_추석",0) > 0:
             add = f"(대체 {int(r['대체_추'])} 포함)" if r.get("대체_추",0)>0 else ""
             notes.append(f"추석연휴 {int(r['일수_명절_추석'])}일 {add}".strip())
-        # 비명절 대체공휴일(예: 어린이날 대체 등)
         only_sub = int(r.get("일수_공휴일_대체",0)) - int(r.get("대체_설",0)) - int(r.get("대체_추",0))
         if only_sub > 0:
             notes.append(f"대체공휴일 {only_sub}일")
@@ -353,27 +334,13 @@ with st.sidebar:
     with colC: y_end = st.selectbox("예측 종료(연)", years, index=1, key="ye")
     with colD: m_end = st.selectbox("예측 종료(월)", list(range(1,13)), index=11, key="me")
 
-    run_btn = st.button("분석 시작", type="primary")
-
-if not run_btn:
-    st.stop()
-
 # ───────────────────────── 데이터 로드 & 전처리 ─────────────────────────
-if file is None:
-    st.warning("엑셀을 업로드하거나 data/effective_days_calendar.xlsx 를 레포에 넣어주세요.")
+if src == "Repo 내 엑셀 사용" and not default_path.exists() and file is None:
+    st.warning("엑셀을 업로드하거나 data/effective_days_calendar.xlsx 를 레포에 넣어줘.")
     st.stop()
 
-try:
-    raw = pd.read_excel(file, engine="openpyxl")
-except Exception:
-    st.error("엑셀을 읽는 중 문제가 발생했습니다.")
-    st.stop()
-
-try:
-    base_df, supply_col = normalize_calendar(raw)
-except Exception as e:
-    st.error(f"전처리 오류: {e}")
-    st.stop()
+raw = pd.read_excel(file if file is not None else default_path, engine="openpyxl")
+base_df, supply_col = normalize_calendar(raw)
 
 # 가중치 계산
 W_monthly, W_global = compute_weights_monthly(base_df, supply_col, cat_col="카테고리_ED", base_cat="평일_1", cap_holiday=CAP_HOLIDAY)
@@ -381,17 +348,13 @@ W_monthly, W_global = compute_weights_monthly(base_df, supply_col, cat_col="카�
 # 기간 필터
 start_ts = pd.Timestamp(int(y_start), int(m_start), 1)
 end_ts   = pd.Timestamp(int(y_end),   int(m_end),   1)
-if end_ts < start_ts:
-    st.error("예측 종료가 시작보다 빠릅니다.")
-    st.stop()
-
 mask = (base_df["날짜"] >= start_ts) & (base_df["날짜"] <= end_ts + pd.offsets.MonthEnd(0))
 pred_df = base_df.loc[mask].copy()
 if pred_df.empty:
-    st.error("선택한 예측 구간에 해당하는 날짜가 엑셀에 없습니다.")
+    st.error("선택한 예측 구간에 해당하는 날짜가 엑셀에 없어.")
     st.stop()
 
-# 매트릭스(연도 선택은 메인 상단 좌측)
+# 매트릭스(연도 선택 즉시 반영)
 years_in_range = sorted(pred_df["연"].unique().tolist())
 st.markdown("#### 유효일수 카테고리 매트릭스")
 c_sel, _ = st.columns([1, 9])
@@ -410,15 +373,15 @@ st.markdown(
 **유효일수 산정(간단 설명)**  
 - 월별 기준카테고리(평일_1) 중앙값을 \(Med_{{m,평1}}\), 카테고리 \(c\) 중앙값을 \(Med_{{m,c}}\)라 할 때  
   **월별 가중치** \(w_{{m,c}} = Med_{{m,c}} / Med_{{m,평1}}\).  
-- 표본이 부족하면 전역 중앙값/기본값으로 보강, **휴일·명절은 상한 \(\\le {CAP_HOLIDAY:.2f}\)** 적용.  
-- **대체휴일이 설/추석으로 발생한 날은 명절로 귀속**하여 같은 가중치를 적용(매트릭스 라벨: `설*`, `추*`).  
+- 표본 부족 시 전역 중앙값/기본값 보강, **휴일·명절은 상한 \(\\le {CAP_HOLIDAY:.2f}\)** 적용.  
+- **대체휴일이 설/추석으로 발생한 날은 명절로 귀속**하여 동일 가중치 적용(매트릭스 라벨: `설*`, `추*`).  
 - **월별 유효일수** \(ED_m = \\sum_c (\\text{{해당월 일수}}_c \\times w_{{m,c}})\).
 """
 )
 
-# 월별 유효일수 표
+# 월별 유효일수 표 + CSV 다운로드
 st.subheader("월별 유효일수 요약")
-eff_tbl = effective_days_by_month(pred_df, W_monthly, count_col="카테고리_CNT", ed_col="카테고리_ED")
+eff_tbl = effective_days_by_month(pred_df, W_monthly, count_col="카테고리_CNT")
 
 show_cols = (["연","월","월일수"]
              + [f"일수_{c}" for c in CATS]
@@ -430,4 +393,12 @@ int_cols = [c for c in eff_show.columns if c not in float4_cols+["비고"]]
 html2 = center_html(eff_show, width_px=1180, float4=float4_cols, int_cols=int_cols)
 st.markdown(html2, unsafe_allow_html=True)
 
-st.caption("라벨 예시: ‘설*’/‘추*’는 명절로 인한 **대체휴일**을 의미(유효일수는 해당 명절과 동일 가중치).")
+# ▶ CSV 다운로드 버튼
+csv_bytes = eff_show.to_csv(index=False, encoding="utf-8-sig").encode("utf-8-sig")
+st.download_button(
+    label="월별 유효일수 CSV 다운로드",
+    data=csv_bytes,
+    file_name="effective_days_summary.csv",
+    mime="text/csv",
+    use_container_width=True,
+)
