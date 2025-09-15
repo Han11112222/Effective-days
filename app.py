@@ -1,4 +1,7 @@
 # app.py — Effective Days (공휴일 표시 복원 · 옵션 반영 · 매트릭스 해치 표기 · 표 소수2자리 고정)
+# 2025-09-15 업데이트: 예측 기간 UI를 데이터 기반 동적 범위로 조정(최소 2015년),
+#                     매트릭스 연도 선택도 선택 구간에 맞춰 2015년부터 표시되도록 개선.
+
 import os
 from pathlib import Path
 from typing import Optional, Dict, Tuple, List
@@ -29,6 +32,9 @@ PALETTE = {
 DEFAULT_WEIGHTS = {"평일_1":1.0,"평일_2":0.952,"토요일":0.85,"일요일":0.60,"공휴일_대체":0.799,"명절_설날":0.842,"명절_추석":0.799}
 CAP_HOLIDAY = 0.90  # 휴일·명절 가중치 상한
 
+# UI 연도 하한(요구사항): 2015년부터 선택 가능
+MIN_YEAR_UI = 2015
+
 # ─────────────────────── 아이콘 헤더 CSS/함수 ───────────────────────
 st.markdown(
     """
@@ -41,11 +47,15 @@ st.markdown(
     """,
     unsafe_allow_html=True,
 )
+
 def icon_title(text: str, icon: str = "🧩"):  st.markdown(f"<div class='icon-h1'><span class='icon-emoji'>{icon}</span><span>{text}</span></div>", unsafe_allow_html=True)
+
 def icon_section(text: str, icon: str = "🗺️"): st.markdown(f"<div class='icon-h2'><span class='icon-emoji'>{icon}</span><span>{text}</span></div>", unsafe_allow_html=True)
+
 def icon_small(text: str, icon: str = "🗂️"):   st.markdown(f"<div class='icon-h3'><span class='icon-emoji'>{icon}</span><span>{text}</span></div>", unsafe_allow_html=True)
 
 # ───────────────────────── 한글 폰트 ─────────────────────────
+
 def set_korean_font():
     here = Path(__file__).parent if "__file__" in globals() else Path.cwd()
     candidates = [
@@ -69,28 +79,37 @@ def set_korean_font():
             pass
     plt.rcParams["font.family"] = ["DejaVu Sans"]
     plt.rcParams["axes.unicode_minus"] = False
+
 set_korean_font()
 
 # ───────────────────────── 유틸 ─────────────────────────
+
 def to_date(x):
     s = str(x).strip()
     if len(s) == 8 and s.isdigit(): return pd.to_datetime(s, format="%Y%m%d", errors="coerce")
     return pd.to_datetime(x, errors="coerce")
 
+
 def to_bool(x) -> bool:
     s = str(x).strip().upper()
     return s in {"TRUE","T","Y","YES","1"}
 
+
 HOL_KW = {"seol": ["설","설날","seol"], "chu": ["추","추석","chuseok","chu"], "sub": ["대체","대체공휴","substitute"]}
+
+
 def contains_any(s: str, keys: List[str]) -> bool:
     s = (s or "").lower()
     return any(k.lower() in s for k in keys)
+
 
 def in_lny_window(month: int, day: int) -> bool:
     # 음력 설이 걸리는 대략적 양력 구간(1/20~2/20)
     return (month == 1 and day >= 20) or (month == 2 and day <= 20)
 
+
 # ───────────── 캘린더 정규화 ─────────────
+
 def normalize_calendar(df: pd.DataFrame):
     d = df.copy()
     d.columns = [str(c).strip() for c in d.columns]
@@ -187,7 +206,9 @@ def normalize_calendar(df: pd.DataFrame):
 
     return d, supply_col
 
+
 # ───────────── 가중치 계산 ─────────────
+
 def compute_weights_monthly(
     df: pd.DataFrame,
     supply_col: Optional[str],
@@ -227,7 +248,9 @@ def compute_weights_monthly(
     global_w = {c: float(np.nanmedian(W_filled[c].values)) for c in CATS}
     return W_filled, global_w
 
+
 # ───────────── 월별 유효일수 ─────────────
+
 def effective_days_by_month(df: pd.DataFrame, weights_monthly: pd.DataFrame, count_col="카테고리_CNT") -> pd.DataFrame:
     counts = (df.pivot_table(index=["연","월"], columns=count_col, values="날짜", aggfunc="count")
                 .reindex(columns=CATS, fill_value=0).astype(int))
@@ -241,8 +264,8 @@ def effective_days_by_month(df: pd.DataFrame, weights_monthly: pd.DataFrame, cou
     out["적용_비율(유효/월일수)"] = (out["유효일수합"]/out["월일수"])
     # 대체휴일 메모
     aux = df.assign(_cnt=1)
-    sub_s = aux[(aux["카테고리_SRC"]=="공휴일_대체") & (aux["대체_사유"]=="설")].groupby(["연","월"])["_cnt"].sum().rename("대체_설").astype(int)
-    sub_c = aux[(aux["카테고리_SRC"]=="공휴일_대체") & (aux["대체_사유"]=="추")].groupby(["연","월"])["_cnt"].sum().rename("대체_추").astype(int)
+    sub_s = aux[(aux["카테고리_SRC"]=="공휴일_대체") & (aux["대체_사유"]=="설")].groupby(["연","월"])['_cnt'].sum().rename("대체_설").astype(int)
+    sub_c = aux[(aux["카테고리_SRC"]=="공휴일_대체") & (aux["대체_사유"]=="추")].groupby(["연","월"])['_cnt'].sum().rename("대체_추").astype(int)
     out = out.join(sub_s, how="left").join(sub_c, how="left").fillna({"대체_설":0,"대체_추":0})
 
     def remark_row(r):
@@ -259,7 +282,9 @@ def effective_days_by_month(df: pd.DataFrame, weights_monthly: pd.DataFrame, cou
     out["비고"]=out.apply(remark_row,axis=1)
     return out.reset_index()
 
+
 # ───────────── 캘린더 그림 ─────────────
+
 def draw_calendar_matrix(year: int, df_year: pd.DataFrame, weights: Dict[str,float], highlight_sub_samples: bool=False):
     months = range(1,13); days = range(1,32)
     fig, ax = plt.subplots(figsize=(13,7))
@@ -292,7 +317,9 @@ def draw_calendar_matrix(year: int, df_year: pd.DataFrame, weights: Dict[str,flo
     plt.tight_layout()
     return fig
 
+
 # ───────────── 표 렌더링 ─────────────
+
 def center_html(df: pd.DataFrame, width_px: int = 1100, formats: Optional[Dict[str,str]] = None, int_cols: Optional[List[str]] = None) -> str:
     int_cols = int_cols or []
     sty = df.style.set_table_styles([
@@ -305,6 +332,7 @@ def center_html(df: pd.DataFrame, width_px: int = 1100, formats: Optional[Dict[s
     for c in int_cols:
         if c in df.columns: sty = sty.format({c:"{:.0f}"})
     return sty.to_html()
+
 
 # ───────────────────────── UI ─────────────────────────
 icon_title(TITLE, "🧩")
@@ -332,19 +360,48 @@ with st.sidebar:
 
     st.markdown("---")
     icon_small("예측 기간", "⏱️")
-    years = list(range(2026, 2031))
+
+    # ===== 변경: 파일의 실제 연도 범위를 읽어 UI 범위로 사용(최소 2015년) =====
+    def compute_year_options(_file) -> List[int]:
+        try:
+            # 업로드 파일/핸들은 여러 번 읽을 수 있도록 포인터 복원
+            if hasattr(_file, "seek"): _file.seek(0)
+            raw_preview = pd.read_excel(_file if _file is not None else default_path, engine="openpyxl")
+            base_preview, _ = normalize_calendar(raw_preview)
+            years_all = sorted(set(base_preview["연"].tolist()))
+            if not years_all:
+                return list(range(MIN_YEAR_UI, MIN_YEAR_UI + 16))  # 2015~2030 fallback
+            min_y, max_y = min(years_all), max(years_all)
+            min_y = min(min_y, MIN_YEAR_UI)
+            # 미래 선택 여유를 위해 +4년 버퍼(캘린더가 있다면 거기까지 선택 가능)
+            return list(range(min_y, max(max_y, MIN_YEAR_UI) + 5))
+        except Exception:
+            return list(range(MIN_YEAR_UI, MIN_YEAR_UI + 16))
+
+    years = compute_year_options(file)
+    # 기본값: 시작=2015, 종료=가용최대(또는 그 다음 해)
+    def safe_index(lst, val, fallback=0):
+        try: return lst.index(val)
+        except ValueError: return fallback
+
     colA, colB = st.columns(2)
-    with colA: y_start = st.selectbox("예측 시작(연)", years, index=0, key="ys")
-    with colB: m_start = st.selectbox("예측 시작(월)", list(range(1,13)), index=0, key="ms")
+    with colA: y_start = st.selectbox("예측 시작(연)", years, index=safe_index(years, MIN_YEAR_UI), key="ys")
+    with colB: m_start = st.selectbox("예측 시작(월)", list(range(1,13)), index=0, key="ms")  # 1월
     colC, colD = st.columns(2)
-    with colC: y_end = st.selectbox("예측 종료(연)", years, index=1, key="ye")
-    with colD: m_end = st.selectbox("예측 종료(월)", list(range(1,13)), index=11, key="me")
+    with colC: y_end = st.selectbox("예측 종료(연)", years, index=len(years)-1 if len(years)>1 else 0, key="ye")
+    with colD: m_end = st.selectbox("예측 종료(월)", list(range(1,13)), index=11, key="me")  # 12월
 
     if st.button("분석 시작", type="primary"): st.session_state.ran = True
 
 if not st.session_state.ran: st.stop()
 
 # ───────────────────────── 데이터 로드 & 전처리 ─────────────────────────
+# 업로드/핸들을 다시 읽을 수 있도록 포인터 복원
+try:
+    if 'file' in locals() and hasattr(file, 'seek'): file.seek(0)
+except Exception:
+    pass
+
 default_path = Path("data") / "effective_days_calendar.xlsx"
 raw = pd.read_excel(file if 'file' in locals() and file is not None else default_path, engine="openpyxl")
 base_df, supply_col = normalize_calendar(raw)
@@ -371,7 +428,9 @@ icon_section("유효일수 카테고리 매트릭스", "🗺️")
 years_in_range = sorted(pred_df["연"].unique().tolist())
 c_sel, _ = st.columns([1, 9])
 with c_sel:
-    show_year = st.selectbox("매트릭스 표시 연도", years_in_range, index=0, key="matrix_year")
+    # 시작 연도를 기본 선택(요구사항: 2015년부터 보여주기)
+    idx0 = 0
+    show_year = st.selectbox("매트릭스 표시 연도", years_in_range, index=idx0, key="matrix_year")
 fig = draw_calendar_matrix(show_year, pred_df[pred_df["연"]==show_year], W_global, highlight_sub_samples=opt_ignore_sub)
 st.pyplot(fig, clear_figure=True)
 
