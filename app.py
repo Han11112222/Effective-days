@@ -1,10 +1,13 @@
 # app.py — Effective Days (공휴일 표시 복원 · 옵션 반영 · 매트릭스 해치 표기 · 표 소수2자리 고정)
-# 2025-09-15 업데이트1: 예측 기간 UI를 데이터 기반 동적 범위로 조정(최소 2015년),
-#                      매트릭스 연도 선택도 선택 구간에 맞춰 2015년부터 표시되도록 개선.
-# 2025-09-15 업데이트2: 임시공휴일을 일반 공휴일로 취급, 매트릭스(가중치 숫자) 엑셀 내보내기(연도별 시트) 추가.
+# 2025-09-15 업데이트:
+#  - 예측 기간 UI를 데이터 범위 기반(최소 2015년)으로 구성
+#  - 임시공휴일을 일반 공휴일(‘휴’)로 표시
+#  - 월별 요약 CSV + 일자별(매트릭스 동일) CSV 다운로드
+#  - 매트릭스(가중치 숫자) 엑셀 다운로드: xlsxwriter 없을 때 openpyxl/임시파일로 폴백
 
 import os
 from io import BytesIO
+from tempfile import NamedTemporaryFile
 from pathlib import Path
 from typing import Optional, Dict, Tuple, List
 
@@ -27,15 +30,17 @@ DESC = (
 
 CATS: List[str] = ["평일_1","평일_2","토요일","일요일","공휴일_대체","명절_설날","명절_추석"]
 CAT_SHORT: Dict[str, str] = {"평일_1":"평1","평일_2":"평2","토요일":"토","일요일":"일","공휴일_대체":"휴","명절_설날":"설","명절_추석":"추"}
+# 범례용 표시명(공휴일_대체 → 공휴일)
+CATS_DISPLAY: Dict[str, str] = {c: ("공휴일" if c=="공휴일_대체" else c) for c in CATS}
 PALETTE = {
     "평일_1":"#7DC3C1","평일_2":"#3DA4AB","토요일":"#5D6D7E","일요일":"#34495E",
     "공휴일_대체":"#E57373","명절_설날":"#F5C04A","명절_추석":"#F39C12",
 }
-DEFAULT_WEIGHTS = {"평일_1":1.0,"평일_2":0.952,"토요일":0.85,"일요일":0.60,"공휴일_대체":0.799,"명절_설날":0.842,"명절_추석":0.799}
-CAP_HOLIDAY = 0.90  # 휴일·명절 가중치 상한
+# 기본 가중치(표본 부족 보강용)
+DEFAULT_WEIGHTS = {"평일_1":1.0,"평일_2":0.9713,"토요일":0.8566,"일요일":0.7651,"공휴일_대체":0.8410,"명절_설날":0.8381,"명절_추석":0.7990}
+CAP_HOLIDAY = 0.90  # 휴일·명절 상한
 
-# UI 연도 하한(요구사항): 2015년부터 선택 가능
-MIN_YEAR_UI = 2015
+MIN_YEAR_UI = 2015  # UI 선택 최소 연도
 
 # ─────────────────────── 아이콘 헤더 CSS/함수 ───────────────────────
 st.markdown(
@@ -90,14 +95,13 @@ def to_bool(x) -> bool:
     return s in {"TRUE","T","Y","YES","1"}
 
 HOL_KW = {"seol": ["설","설날","seol"], "chu": ["추","추석","chuseok","chu"], "sub": ["대체","대체공휴","substitute"]}
-TEMP_KW = ["임시","임시공휴일","temporary"]  # 임시공휴일 키워드
+TEMP_KW = ["임시","임시공휴","임시공휴일","temporary"]  # 임시공휴일 키워드
 
 def contains_any(s: str, keys: List[str]) -> bool:
     s = (s or "").lower()
     return any(k.lower() in s for k in keys)
 
 def in_lny_window(month: int, day: int) -> bool:
-    # 음력 설이 걸리는 대략적 양력 구간(1/20~2/20)
     return (month == 1 and day >= 20) or (month == 2 and day <= 20)
 
 # ───────────── 캘린더 정규화 ─────────────
@@ -105,7 +109,7 @@ def normalize_calendar(df: pd.DataFrame):
     d = df.copy()
     d.columns = [str(c).strip() for c in d.columns]
 
-    # 날짜 열
+    # 날짜 열 추출
     date_col = None
     for c in d.columns:
         if str(c).lower() in ["날짜","일자","date"]: date_col = c; break
@@ -133,25 +137,24 @@ def normalize_calendar(df: pd.DataFrame):
     for c in d.columns:
         if ("공급" in str(c)) and pd.api.types.is_numeric_dtype(d[c]): supply_col = c; break
 
-    # 1) 1차 분류 — 보수적 판정(공휴일이 사라지지 않도록)
+    # 1) 1차 분류
     def base_category(row) -> str:
         g = str(row.get("구분",""))
         y = row["요일"]; m = int(row["월"]); day = int(row["일"])
+        has_seol = contains_any(g, HOL_KW["seol"])
+        has_chu  = contains_any(g, HOL_KW["chu"])
+        is_pub   = bool(row.get("공휴일여부", False)) or contains_any(g, TEMP_KW)  # 임시공휴일 포함
 
-        has_seol_kw = contains_any(g, HOL_KW["seol"])
-        has_chu_kw  = contains_any(g, HOL_KW["chu"])
-        is_pub      = bool(row.get("공휴일여부", False)) or contains_any(g, TEMP_KW)  # 임시공휴일 포함
-
-        if has_seol_kw:
+        if has_seol:
             return "명절_설날" if in_lny_window(m, day) and not (m==1 and day==1) else "공휴일_대체"
-        if has_chu_kw:
+        if has_chu:
             return "명절_추석" if m == 9 else "공휴일_대체"
 
         if row.get("명절여부", False):
             if in_lny_window(m, day) and not (m==1 and day==1): return "명절_설날"
             if m == 9: return "명절_추석"
 
-        if is_pub: return "공휴일_대체"  # 임시공휴일 → 일반 공휴일(라벨 ‘휴’)
+        if is_pub: return "공휴일_대체"
 
         if y=="토": return "토요일"
         if y=="일": return "일요일"
@@ -169,7 +172,7 @@ def normalize_calendar(df: pd.DataFrame):
         return None
     d["대체_사유"] = d.apply(sub_reason, axis=1)
 
-    # 3) 강제 오버라이드: 1/1은 설 제외, 2026·2027/10은 ‘추*’ 금지
+    # 3) 강제 오버라이드
     jan1 = (d["월"]==1) & (d["일"]==1)
     d.loc[jan1, ["카테고리_SRC","대체_사유"]] = ["공휴일_대체", None]
     mask_oct_2627 = (d["월"]==10) & (d["연"].isin([2026, 2027]))
@@ -204,7 +207,7 @@ def compute_weights_monthly(
     cat_col="카테고리_ED",
     base_cat="평일_1",
     cap_holiday=CAP_HOLIDAY,
-    ignore_substitute_in_weights: bool = True,   # 옵션: 명절 가중치 계산에서 ‘대체공휴일’ 제외
+    ignore_substitute_in_weights: bool = True,
 ) -> Tuple[pd.DataFrame, Dict[str,float]]:
 
     W = []
@@ -247,8 +250,24 @@ def effective_days_by_month(df: pd.DataFrame, weights_monthly: pd.DataFrame, cou
         eff[c] = eff[c] * month_idx.map(weights_monthly[c]).values
     eff_sum = eff.sum(axis=1).rename("유효일수합")
     month_days = df.groupby(["연","월"])["날짜"].nunique().rename("월일수")
-    out = pd.concat([month_days, counts.add_prefix("일수_"), eff.add_prefix("적용_"), eff_sum], axis=1)
+
+    # 카테고리별 효과(일수 × (w-1)) 및 총합
+    effect = counts.copy().astype(float)
+    for c in CATS:
+        w = month_idx.map(weights_monthly[c]).values
+        effect[c] = counts[c] * (w - 1.0)
+    effect_sum = effect.sum(axis=1).rename("총효과(Σ일수×(w-1))")
+
+    out = pd.concat([
+        month_days,
+        counts.add_prefix("일수_"),
+        eff.add_prefix("적용_"),
+        effect.add_prefix("효과_"),
+        eff_sum,
+        effect_sum,
+    ], axis=1)
     out["적용_비율(유효/월일수)"] = (out["유효일수합"]/out["월일수"])
+
     # 대체휴일 메모
     aux = df.assign(_cnt=1)
     sub_s = aux[(aux["카테고리_SRC"]=="공휴일_대체") & (aux["대체_사유"]=="설")].groupby(["연","월"])['_cnt'].sum().rename("대체_설").astype(int)
@@ -294,7 +313,7 @@ def draw_calendar_matrix(year: int, df_year: pd.DataFrame, weights: Dict[str,flo
             ax.text(j+0.5,i+0.5,label,ha="center",va="center",fontsize=9,
                     color="white" if label in ["설","추","설*","추*","휴"] else "black", fontweight="bold")
 
-    handles=[mpl.patches.Patch(color=PALETTE[c], label=f"{c} ({weights.get(c,1):.3f})") for c in CATS]
+    handles=[mpl.patches.Patch(color=PALETTE[c], label=f"{CATS_DISPLAY[c]} ({weights.get(c,1):.3f})") for c in CATS]
     if highlight_sub_samples:
         handles.append(mpl.patches.Patch(facecolor="white", edgecolor="black", hatch="////", label="가중치 제외 표본(설*/추*)"))
     ax.legend(handles=handles, loc="upper left", bbox_to_anchor=(1.02,1.0), frameon=False, title="카테고리 (가중치)")
@@ -350,7 +369,7 @@ with st.sidebar:
             base_preview, _ = normalize_calendar(raw_preview)
             years_all = sorted(set(base_preview["연"].tolist()))
             if not years_all:
-                return list(range(MIN_YEAR_UI, MIN_YEAR_UI + 16))  # 2015~2030 fallback
+                return list(range(MIN_YEAR_UI, MIN_YEAR_UI + 16))
             min_y, max_y = min(years_all), max(years_all)
             min_y = min(min_y, MIN_YEAR_UI)
             return list(range(min_y, max(max_y, MIN_YEAR_UI) + 5))  # +4년 버퍼
@@ -415,7 +434,7 @@ icon_section("카테고리 가중치 요약", "⚖️")
 col_table, col_desc = st.columns([0.5, 1.05], gap="small")
 
 with col_table:
-    w_show = pd.DataFrame({"카테고리": CATS, "전역 가중치(중앙값)": [W_global[c] for c in CATS]})
+    w_show = pd.DataFrame({"카테고리": [CATS_DISPLAY[c] for c in CATS], "전역 가중치(중앙값)": [W_global[c] for c in CATS]})
     html = center_html(w_show, width_px=540, formats={"전역 가중치(중앙값)":"{:.4f}"})
     st.markdown(html, unsafe_allow_html=True)
 
@@ -423,10 +442,10 @@ with col_desc:
     st.markdown(
         f"""
 **유효일수 산정 요약**  
-- 월별 기준카테고리(**평일_1: 화·수·목**) 중앙값 (Med_{{m,평1}}), 카테고리 c 중앙값 (Med_{{m,c}}) ⇒ **월별 가중치** (w_{{m,c}}=Med_{{m,c}}/Med_{{m,평1}})  
-- 표본 부족 시 전역 중앙값/기본값 보강, **휴일·명절 상한 (≤ {CAP_HOLIDAY:.2f})** 적용  
+- 월별 기준카테고리(**평일_1: 화·수·목**) 중앙값 \(Med_{{m,평1}}\), 카테고리 \(c\) 중앙값 \(Med_{{m,c}}\) ⇒ **월별 가중치** \(w_{{m,c}}=Med_{{m,c}}/Med_{{m,평1}}\)  
+- 표본 부족 시 전역 중앙값/기본값 보강, **휴일·명절 상한 \(\\le {CAP_HOLIDAY:.2f}\)** 적용  
 - **설/추 대체공휴일(설*/추*)**: **일수 집계 포함**, **가중치 계산은 옵션에 따라 제외(기본)**  
-- **월별 유효일수** (ED_m = Σ(해당월 일수_c × w_{{m,c}}))
+- **월별 유효일수** \(ED_m=\sum_c (\text{{해당월 일수}}_c \times w_{{m,c}})\)
 """
     )
 
@@ -437,25 +456,52 @@ eff_tbl = effective_days_by_month(pred_df, W_monthly, count_col="카테고리_CN
 show_cols = (["연","월","월일수"] + [f"일수_{c}" for c in CATS] + ["유효일수합","적용_비율(유효/월일수)","비고"])
 eff_show = eff_tbl[show_cols].sort_values(["연","월"]).reset_index(drop=True)
 
-# 화면 표시는 두 열만 소수 2자리 문자열로 고정(0.96 형태)
+# 화면 표시는 두 열만 소수 2자리 문자열로 고정
 eff_disp = eff_show.copy()
 eff_disp["유효일수합"] = eff_disp["유효일수합"].map(lambda x: f"{x:.2f}")
 eff_disp["적용_비율(유효/월일수)"] = eff_disp["적용_비율(유효/월일수)"].map(lambda x: f"{x:.2f}")
 
-formats = {"유효일수합":"{}", "적용_비율(유효/월일수)":"{}"}  # 이미 문자열이므로 포맷은 그대로
+formats = {"유효일수합":"{}", "적용_비율(유효/월일수)":"{}"}
 int_cols = [c for c in eff_disp.columns if c not in ["유효일수합","적용_비율(유효/월일수)","비고"]]
 html2 = center_html(eff_disp, width_px=1180, formats=formats, int_cols=int_cols)
 st.markdown(html2, unsafe_allow_html=True)
 
 left_dl, right_dl = st.columns([1, 1])
 with left_dl:
-    csv_bytes = eff_show.to_csv(index=False, encoding="utf-8-sig").encode("utf-8-sig")
+    # 월별 요약 CSV (효과 열 포함)
+    csv_bytes = eff_tbl.sort_values(["연","월"]).to_csv(index=False, encoding="utf-8-sig").encode("utf-8-sig")
     st.download_button(
-        label="월별 유효일수 CSV 다운로드",
+        label="월별 유효일수 CSV 다운로드(효과 포함)",
         data=csv_bytes,
         file_name="effective_days_summary.csv",
         mime="text/csv",
-        use_container_width=False,
+        use_container_width=True,
+    )
+
+with right_dl:
+    # 일자별 카테고리/가중치 CSV (매트릭스 동일)
+    daily = pred_df.copy()
+    def weight_row(r):
+        m = int(r["월"]); c = r["카테고리_ED"]
+        try:
+            return float(W_monthly.loc[m, c])
+        except Exception:
+            return float(W_global.get(c, 1.0))
+    daily["적용_가중치"] = daily.apply(weight_row, axis=1)
+    daily["Δ(가중치-1)"] = daily["적용_가중치"] - 1.0
+    daily["공휴일표현"] = np.where(
+        (daily["카테고리_SRC"]=="공휴일_대체") & daily["대체_사유"].isna(), "공휴일",
+        np.where((daily["카테고리_SRC"]=="공휴일_대체") & daily["대체_사유"].notna(),
+                 "대체공휴일(" + daily["대체_사유"].astype(str) + ")", "")
+    )
+    daily_export = daily[["날짜","연","월","일","요일","카테고리_CNT","카테고리_표시","공휴일표현","적용_가중치","Δ(가중치-1)"]].copy()
+    daily_bytes = daily_export.to_csv(index=False, encoding="utf-8-sig").encode("utf-8-sig")
+    st.download_button(
+        label="일자별 카테고리/가중치 CSV 다운로드(매트릭스 동일)",
+        data=daily_bytes,
+        file_name="effective_days_calendar_detail.csv",
+        mime="text/csv",
+        use_container_width=True,
     )
 
 # ───────────────────────── 매트릭스(가중치 숫자) 엑셀 내보내기 ─────────────────────────
@@ -465,27 +511,51 @@ def build_year_matrix_numeric(df: pd.DataFrame, weights_monthly: pd.DataFrame, y
     mat = df_y.pivot(index="일", columns="월", values="가중치").reindex(index=range(1,32), columns=range(1,13))
     return mat
 
-with right_dl:
-    xls_buf = BytesIO()
-    with pd.ExcelWriter(xls_buf, engine="xlsxwriter") as writer:
-        # 전역 가중치 시트
-        gdf = pd.DataFrame({"카테고리": CATS, "전역 가중치(중앙값)": [W_global[c] for c in CATS]}).round(4)
-        gdf.to_excel(writer, sheet_name="가중치요약", index=False)
-        # 월별 가중치 시트
-        Wm_out = W_monthly.copy()
-        Wm_out.index = [f"{m}월" for m in Wm_out.index]
-        Wm_out = Wm_out[[c for c in CATS if c in Wm_out.columns]].round(4)
-        Wm_out.to_excel(writer, sheet_name="월별가중치")
-        # 연도별 숫자 매트릭스 시트
-        for yy in years_in_range:
-            mat = build_year_matrix_numeric(pred_df, W_monthly, yy).round(4)
-            mat.columns = [f"{m}월" for m in mat.columns]
-            mat.index.name = "일"
-            mat.to_excel(writer, sheet_name=str(yy))
-    st.download_button(
-        label="매트릭스(가중치 숫자) 엑셀 다운로드",
-        data=xls_buf.getvalue(),
-        file_name=f"effective_days_matrix_{y_start}-{int(m_start):02d}_{y_end}-{int(m_end):02d}.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        use_container_width=False,
-    )
+def _write_excel_content(writer):
+    # 전역 가중치
+    gdf = pd.DataFrame({"카테고리": [CATS_DISPLAY[c] for c in CATS], "전역 가중치(중앙값)": [W_global[c] for c in CATS]}).round(4)
+    gdf.to_excel(writer, sheet_name="가중치요약", index=False)
+    # 월별 가중치
+    Wm_out = W_monthly.copy()
+    Wm_out.index = [f"{m}월" for m in Wm_out.index]
+    Wm_out = Wm_out[[c for c in CATS if c in Wm_out.columns]].round(4)
+    Wm_out.columns = [CATS_DISPLAY[c] for c in Wm_out.columns]
+    Wm_out.to_excel(writer, sheet_name="월별가중치")
+    # 연도별 숫자 매트릭스
+    for yy in years_in_range:
+        mat = build_year_matrix_numeric(pred_df, W_monthly, yy).round(4)
+        mat.columns = [f"{m}월" for m in mat.columns]
+        mat.index.name = "일"
+        mat.to_excel(writer, sheet_name=str(yy))
+
+def build_excel_bytes() -> bytes:
+    # 1차: xlsxwriter 사용 시도
+    try:
+        import xlsxwriter  # 존재 여부 확인
+        buf = BytesIO()
+        with pd.ExcelWriter(buf, engine="xlsxwriter") as writer:
+            _write_excel_content(writer)
+        return buf.getvalue()
+    except Exception:
+        # 2차: openpyxl로 BytesIO 쓰기 시도
+        try:
+            buf = BytesIO()
+            with pd.ExcelWriter(buf, engine="openpyxl") as writer:
+                _write_excel_content(writer)
+            return buf.getvalue()
+        except Exception:
+            # 3차: 임시파일 폴백
+            with NamedTemporaryFile(suffix=".xlsx", delete=True) as tmp:
+                with pd.ExcelWriter(tmp.name, engine="openpyxl") as writer:
+                    _write_excel_content(writer)
+                tmp.seek(0)
+                return tmp.read()
+
+excel_bytes = build_excel_bytes()
+st.download_button(
+    label="매트릭스(가중치 숫자) 엑셀 다운로드",
+    data=excel_bytes,
+    file_name=f"effective_days_matrix_{y_start}-{int(m_start):02d}_{y_end}-{int(m_end):02d}.xlsx",
+    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    use_container_width=False,
+)
