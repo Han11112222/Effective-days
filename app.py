@@ -1,8 +1,10 @@
 # app.py — Effective Days (공휴일 표시 복원 · 옵션 반영 · 매트릭스 해치 표기 · 표 소수2자리 고정)
-# 2025-09-15 업데이트: 예측 기간 UI를 데이터 기반 동적 범위로 조정(최소 2015년),
-#                     매트릭스 연도 선택도 선택 구간에 맞춰 2015년부터 표시되도록 개선.
+# 2025-09-15 업데이트1: 예측 기간 UI를 데이터 기반 동적 범위로 조정(최소 2015년),
+#                      매트릭스 연도 선택도 선택 구간에 맞춰 2015년부터 표시되도록 개선.
+# 2025-09-15 업데이트2: 임시공휴일을 일반 공휴일로 취급, 매트릭스(가중치 숫자) 엑셀 내보내기(연도별 시트) 추가.
 
 import os
+from io import BytesIO
 from pathlib import Path
 from typing import Optional, Dict, Tuple, List
 
@@ -47,15 +49,11 @@ st.markdown(
     """,
     unsafe_allow_html=True,
 )
-
 def icon_title(text: str, icon: str = "🧩"):  st.markdown(f"<div class='icon-h1'><span class='icon-emoji'>{icon}</span><span>{text}</span></div>", unsafe_allow_html=True)
-
 def icon_section(text: str, icon: str = "🗺️"): st.markdown(f"<div class='icon-h2'><span class='icon-emoji'>{icon}</span><span>{text}</span></div>", unsafe_allow_html=True)
-
 def icon_small(text: str, icon: str = "🗂️"):   st.markdown(f"<div class='icon-h3'><span class='icon-emoji'>{icon}</span><span>{text}</span></div>", unsafe_allow_html=True)
 
 # ───────────────────────── 한글 폰트 ─────────────────────────
-
 def set_korean_font():
     here = Path(__file__).parent if "__file__" in globals() else Path.cwd()
     candidates = [
@@ -79,37 +77,30 @@ def set_korean_font():
             pass
     plt.rcParams["font.family"] = ["DejaVu Sans"]
     plt.rcParams["axes.unicode_minus"] = False
-
 set_korean_font()
 
 # ───────────────────────── 유틸 ─────────────────────────
-
 def to_date(x):
     s = str(x).strip()
     if len(s) == 8 and s.isdigit(): return pd.to_datetime(s, format="%Y%m%d", errors="coerce")
     return pd.to_datetime(x, errors="coerce")
 
-
 def to_bool(x) -> bool:
     s = str(x).strip().upper()
     return s in {"TRUE","T","Y","YES","1"}
 
-
 HOL_KW = {"seol": ["설","설날","seol"], "chu": ["추","추석","chuseok","chu"], "sub": ["대체","대체공휴","substitute"]}
-
+TEMP_KW = ["임시","임시공휴일","temporary"]  # 임시공휴일 키워드
 
 def contains_any(s: str, keys: List[str]) -> bool:
     s = (s or "").lower()
     return any(k.lower() in s for k in keys)
 
-
 def in_lny_window(month: int, day: int) -> bool:
     # 음력 설이 걸리는 대략적 양력 구간(1/20~2/20)
     return (month == 1 and day >= 20) or (month == 2 and day <= 20)
 
-
 # ───────────── 캘린더 정규화 ─────────────
-
 def normalize_calendar(df: pd.DataFrame):
     d = df.copy()
     d.columns = [str(c).strip() for c in d.columns]
@@ -149,7 +140,7 @@ def normalize_calendar(df: pd.DataFrame):
 
         has_seol_kw = contains_any(g, HOL_KW["seol"])
         has_chu_kw  = contains_any(g, HOL_KW["chu"])
-        is_pub      = bool(row.get("공휴일여부", False))
+        is_pub      = bool(row.get("공휴일여부", False)) or contains_any(g, TEMP_KW)  # 임시공휴일 포함
 
         if has_seol_kw:
             return "명절_설날" if in_lny_window(m, day) and not (m==1 and day==1) else "공휴일_대체"
@@ -160,7 +151,7 @@ def normalize_calendar(df: pd.DataFrame):
             if in_lny_window(m, day) and not (m==1 and day==1): return "명절_설날"
             if m == 9: return "명절_추석"
 
-        if is_pub: return "공휴일_대체"
+        if is_pub: return "공휴일_대체"  # 임시공휴일 → 일반 공휴일(라벨 ‘휴’)
 
         if y=="토": return "토요일"
         if y=="일": return "일요일"
@@ -206,9 +197,7 @@ def normalize_calendar(df: pd.DataFrame):
 
     return d, supply_col
 
-
 # ───────────── 가중치 계산 ─────────────
-
 def compute_weights_monthly(
     df: pd.DataFrame,
     supply_col: Optional[str],
@@ -248,9 +237,7 @@ def compute_weights_monthly(
     global_w = {c: float(np.nanmedian(W_filled[c].values)) for c in CATS}
     return W_filled, global_w
 
-
 # ───────────── 월별 유효일수 ─────────────
-
 def effective_days_by_month(df: pd.DataFrame, weights_monthly: pd.DataFrame, count_col="카테고리_CNT") -> pd.DataFrame:
     counts = (df.pivot_table(index=["연","월"], columns=count_col, values="날짜", aggfunc="count")
                 .reindex(columns=CATS, fill_value=0).astype(int))
@@ -282,9 +269,7 @@ def effective_days_by_month(df: pd.DataFrame, weights_monthly: pd.DataFrame, cou
     out["비고"]=out.apply(remark_row,axis=1)
     return out.reset_index()
 
-
 # ───────────── 캘린더 그림 ─────────────
-
 def draw_calendar_matrix(year: int, df_year: pd.DataFrame, weights: Dict[str,float], highlight_sub_samples: bool=False):
     months = range(1,13); days = range(1,32)
     fig, ax = plt.subplots(figsize=(13,7))
@@ -301,7 +286,6 @@ def draw_calendar_matrix(year: int, df_year: pd.DataFrame, weights: Dict[str,flo
             if row.empty: continue
             r = row.iloc[0]
             label = r["카테고리_표시"]; color = r["카테고리_색"]
-            # 옵션 체크 시, 설*/추* 표본을 해치/테두리로 마킹
             hatch = None; edgecolor = None; lw = 0.0
             if highlight_sub_samples and (r["카테고리_SRC"]=="공휴일_대체") and (r["대체_사유"] in ("설","추")):
                 hatch = "////"; edgecolor = "black"; lw = 1.2
@@ -317,9 +301,7 @@ def draw_calendar_matrix(year: int, df_year: pd.DataFrame, weights: Dict[str,flo
     plt.tight_layout()
     return fig
 
-
 # ───────────── 표 렌더링 ─────────────
-
 def center_html(df: pd.DataFrame, width_px: int = 1100, formats: Optional[Dict[str,str]] = None, int_cols: Optional[List[str]] = None) -> str:
     int_cols = int_cols or []
     sty = df.style.set_table_styles([
@@ -332,7 +314,6 @@ def center_html(df: pd.DataFrame, width_px: int = 1100, formats: Optional[Dict[s
     for c in int_cols:
         if c in df.columns: sty = sty.format({c:"{:.0f}"})
     return sty.to_html()
-
 
 # ───────────────────────── UI ─────────────────────────
 icon_title(TITLE, "🧩")
@@ -361,10 +342,9 @@ with st.sidebar:
     st.markdown("---")
     icon_small("예측 기간", "⏱️")
 
-    # ===== 변경: 파일의 실제 연도 범위를 읽어 UI 범위로 사용(최소 2015년) =====
+    # 파일의 실제 연도 범위를 읽어 UI 범위로 사용(최소 2015년)
     def compute_year_options(_file) -> List[int]:
         try:
-            # 업로드 파일/핸들은 여러 번 읽을 수 있도록 포인터 복원
             if hasattr(_file, "seek"): _file.seek(0)
             raw_preview = pd.read_excel(_file if _file is not None else default_path, engine="openpyxl")
             base_preview, _ = normalize_calendar(raw_preview)
@@ -373,13 +353,12 @@ with st.sidebar:
                 return list(range(MIN_YEAR_UI, MIN_YEAR_UI + 16))  # 2015~2030 fallback
             min_y, max_y = min(years_all), max(years_all)
             min_y = min(min_y, MIN_YEAR_UI)
-            # 미래 선택 여유를 위해 +4년 버퍼(캘린더가 있다면 거기까지 선택 가능)
-            return list(range(min_y, max(max_y, MIN_YEAR_UI) + 5))
+            return list(range(min_y, max(max_y, MIN_YEAR_UI) + 5))  # +4년 버퍼
         except Exception:
             return list(range(MIN_YEAR_UI, MIN_YEAR_UI + 16))
 
     years = compute_year_options(file)
-    # 기본값: 시작=2015, 종료=가용최대(또는 그 다음 해)
+
     def safe_index(lst, val, fallback=0):
         try: return lst.index(val)
         except ValueError: return fallback
@@ -396,7 +375,6 @@ with st.sidebar:
 if not st.session_state.ran: st.stop()
 
 # ───────────────────────── 데이터 로드 & 전처리 ─────────────────────────
-# 업로드/핸들을 다시 읽을 수 있도록 포인터 복원
 try:
     if 'file' in locals() and hasattr(file, 'seek'): file.seek(0)
 except Exception:
@@ -428,9 +406,7 @@ icon_section("유효일수 카테고리 매트릭스", "🗺️")
 years_in_range = sorted(pred_df["연"].unique().tolist())
 c_sel, _ = st.columns([1, 9])
 with c_sel:
-    # 시작 연도를 기본 선택(요구사항: 2015년부터 보여주기)
-    idx0 = 0
-    show_year = st.selectbox("매트릭스 표시 연도", years_in_range, index=idx0, key="matrix_year")
+    show_year = st.selectbox("매트릭스 표시 연도", years_in_range, index=0, key="matrix_year")
 fig = draw_calendar_matrix(show_year, pred_df[pred_df["연"]==show_year], W_global, highlight_sub_samples=opt_ignore_sub)
 st.pyplot(fig, clear_figure=True)
 
@@ -447,10 +423,10 @@ with col_desc:
     st.markdown(
         f"""
 **유효일수 산정 요약**  
-- 월별 기준카테고리(**평일_1: 화·수·목**) 중앙값 \(Med_{{m,평1}}\), 카테고리 \(c\) 중앙값 \(Med_{{m,c}}\) ⇒ **월별 가중치** \(w_{{m,c}}=Med_{{m,c}}/Med_{{m,평1}}\)  
-- 표본 부족 시 전역 중앙값/기본값 보강, **휴일·명절 상한 \(\\le {CAP_HOLIDAY:.2f}\)** 적용  
+- 월별 기준카테고리(**평일_1: 화·수·목**) 중앙값 (Med_{{m,평1}}), 카테고리 c 중앙값 (Med_{{m,c}}) ⇒ **월별 가중치** (w_{{m,c}}=Med_{{m,c}}/Med_{{m,평1}})  
+- 표본 부족 시 전역 중앙값/기본값 보강, **휴일·명절 상한 (≤ {CAP_HOLIDAY:.2f})** 적용  
 - **설/추 대체공휴일(설*/추*)**: **일수 집계 포함**, **가중치 계산은 옵션에 따라 제외(기본)**  
-- **월별 유효일수** \(ED_m=\sum_c (\text{{해당월 일수}}_c \times w_{{m,c}})\)
+- **월별 유효일수** (ED_m = Σ(해당월 일수_c × w_{{m,c}}))
 """
     )
 
@@ -471,13 +447,45 @@ int_cols = [c for c in eff_disp.columns if c not in ["유효일수합","적용_�
 html2 = center_html(eff_disp, width_px=1180, formats=formats, int_cols=int_cols)
 st.markdown(html2, unsafe_allow_html=True)
 
-left_dl, _ = st.columns([1, 9])
+left_dl, right_dl = st.columns([1, 1])
 with left_dl:
     csv_bytes = eff_show.to_csv(index=False, encoding="utf-8-sig").encode("utf-8-sig")
     st.download_button(
         label="월별 유효일수 CSV 다운로드",
-        data=csv_bytes,  # CSV에는 원본 정밀도 유지
+        data=csv_bytes,
         file_name="effective_days_summary.csv",
         mime="text/csv",
+        use_container_width=False,
+    )
+
+# ───────────────────────── 매트릭스(가중치 숫자) 엑셀 내보내기 ─────────────────────────
+def build_year_matrix_numeric(df: pd.DataFrame, weights_monthly: pd.DataFrame, year: int) -> pd.DataFrame:
+    df_y = df[df["연"]==year][["월","일","카테고리_CNT"]].copy()
+    df_y["가중치"] = df_y.apply(lambda r: float(weights_monthly.loc[int(r["월"]), r["카테고리_CNT"]]), axis=1)
+    mat = df_y.pivot(index="일", columns="월", values="가중치").reindex(index=range(1,32), columns=range(1,13))
+    return mat
+
+with right_dl:
+    xls_buf = BytesIO()
+    with pd.ExcelWriter(xls_buf, engine="xlsxwriter") as writer:
+        # 전역 가중치 시트
+        gdf = pd.DataFrame({"카테고리": CATS, "전역 가중치(중앙값)": [W_global[c] for c in CATS]}).round(4)
+        gdf.to_excel(writer, sheet_name="가중치요약", index=False)
+        # 월별 가중치 시트
+        Wm_out = W_monthly.copy()
+        Wm_out.index = [f"{m}월" for m in Wm_out.index]
+        Wm_out = Wm_out[[c for c in CATS if c in Wm_out.columns]].round(4)
+        Wm_out.to_excel(writer, sheet_name="월별가중치")
+        # 연도별 숫자 매트릭스 시트
+        for yy in years_in_range:
+            mat = build_year_matrix_numeric(pred_df, W_monthly, yy).round(4)
+            mat.columns = [f"{m}월" for m in mat.columns]
+            mat.index.name = "일"
+            mat.to_excel(writer, sheet_name=str(yy))
+    st.download_button(
+        label="매트릭스(가중치 숫자) 엑셀 다운로드",
+        data=xls_buf.getvalue(),
+        file_name=f"effective_days_matrix_{y_start}-{int(m_start):02d}_{y_end}-{int(m_end):02d}.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         use_container_width=False,
     )
