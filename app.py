@@ -141,14 +141,18 @@ def normalize_calendar(df: pd.DataFrame):
         has_chu_kw  = contains_any(g, HOL_KW["chu"])
         is_pub      = bool(row.get("공휴일여부", False))
 
+        # 설: 1~2월 설 연휴창
         if has_seol_kw:
             return "명절_설날" if in_lny_window(m, day) and not (m==1 and day==1) else "공휴일_대체"
+
+        # ★ FIX: 추석은 9월뿐 아니라 10월에도 올 수 있음
         if has_chu_kw:
-            return "명절_추석" if m == 9 else "공휴일_대체"
+            return "명절_추석" if m in (9, 10) else "공휴일_대체"
 
         if row.get("명절여부", False):
             if in_lny_window(m, day) and not (m==1 and day==1): return "명절_설날"
-            if m == 9: return "명절_추석"
+            # ★ FIX: 명절 플래그만 있어도 9·10월은 추석으로 본다
+            if m in (9, 10): return "명절_추석"
 
         if is_pub: return "공휴일_대체"
 
@@ -164,16 +168,17 @@ def normalize_calendar(df: pd.DataFrame):
         if row["카테고리_SRC"] != "공휴일_대체": return None
         g = str(row.get("구분","")); m = int(row["월"]); day = int(row["일"])
         if contains_any(g, HOL_KW["seol"]) and in_lny_window(m, day) and not (m==1 and day==1): return "설"
-        if contains_any(g, HOL_KW["chu"]) and m == 9: return "추"
+        # ★ FIX: 9·10월 모두 추석 대체로 인정
+        if contains_any(g, HOL_KW["chu"]) and m in (9, 10): return "추"
         return None
     d["대체_사유"] = d.apply(sub_reason, axis=1)
 
     # 3) 강제 오버라이드
     jan1 = (d["월"]==1) & (d["일"]==1)
     d.loc[jan1, ["카테고리_SRC","대체_사유"]] = ["공휴일_대체", None]
-    mask_oct_2627 = (d["월"]==10) & (d["연"].isin([2026, 2027]))
-    d.loc[mask_oct_2627 & (d["카테고리_SRC"]=="명절_추석"), "카테고리_SRC"] = "공휴일_대체"
-    d.loc[mask_oct_2627 & (d["대체_사유"]=="추"), "대체_사유"] = None
+
+    # ★ FIX: 과거 10월 추석을 공휴일로 바꾸던 예외 제거
+    # (mask_oct_2627 관련 로직 삭제)
 
     # 4) 카운트/ED용 카테고리(명절 대체는 명절로 귀속)
     def cat_for_count(row):
@@ -461,32 +466,20 @@ html2 = center_html(eff_disp, width_px=1180, formats=formats, int_cols=int_cols)
 st.markdown(html2, unsafe_allow_html=True)
 
 # ───────────────────────── 단일 다운로드(엑셀) ─────────────────────────
-# 1) 첫 시트: 현재 화면의 '월별 유효일수 요약'(eff_show)
-# 2) 월별가중치: 1~12월×카테고리
-# 3) 가중치요약: 전역 가중치(중앙값)
-# 4) 연도별 매트릭스(가중치 숫자): 선택 구간 모든 연도
 buf = io.BytesIO()
 with pd.ExcelWriter(buf, engine="openpyxl") as writer:
-    # 1) 월별 유효일수(첫 시트)
     eff_show.to_excel(writer, index=False, sheet_name="월별유효일수")
-
-    # 2) 월별가중치
     w_mon = W_monthly.copy()
-    w_mon = w_mon.loc[range(1,13), CATS]  # 보장
+    w_mon = w_mon.loc[range(1,13), CATS]
     w_mon.index = [f"{i}월" for i in w_mon.index]
     w_mon = w_mon.reset_index().rename(columns={"index":"월"})
     w_mon.to_excel(writer, index=False, sheet_name="월별가중치")
-
-    # 3) 가중치요약
     w_show.to_excel(writer, index=False, sheet_name="가중치요약")
-
-    # 4) 연도별 매트릭스(가중치 숫자)
     for y in years_in_range:
         dfy = pred_df[pred_df["연"]==y].copy()
         grid = year_matrix_numeric(dfy, W_monthly)
         grid.to_excel(writer, index=True, sheet_name=str(y))
 
-# 다운로드 버튼 (단 하나)
 st.download_button(
     label="매트릭스(가중치 숫자) 엑셀 다운로드",
     data=buf.getvalue(),
